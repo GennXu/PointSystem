@@ -50,7 +50,8 @@ def main():
         (data / 'config.json').write_text(json.dumps({'port': port, 'tls_certfile': str(cert), 'tls_keyfile': str(private)}), encoding='utf8')
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(cert))), urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         log = (data / 'server.log').open('wb')
-        server = subprocess.Popen([str(exe), 'serve', '--data-dir', str(data)], stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        server_env = dict(os.environ, PYTHONIOENCODING='ascii')
+        server = subprocess.Popen([str(exe), 'serve', '--data-dir', str(data)], stdout=log, stderr=log, env=server_env, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
         base = f'https://127.0.0.1:{port}/api'
         csrf = ''
 
@@ -84,12 +85,16 @@ def main():
             assert request('/portal/transactions')[0][0]['delta'] == -100
             print('PASS: frozen EXE, trusted-certificate HTTPS, Secure cookie, negative points, transaction names and portal')
         finally:
-            subprocess.run([str(exe), 'stop', '--data-dir', str(data)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            shutdown = None
             try:
-                server.wait(timeout=15)
+                if server.poll() is None:
+                    shutdown = subprocess.run([str(exe), 'stop', '--data-dir', str(data)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=server_env, check=False)
+                    server.wait(timeout=15)
             finally:
                 log.close()
-            assert server.returncode == 0, (data / 'server.log').read_text(errors='replace')
+            assert server.returncode == 0, (data / 'server.log').read_text(encoding='utf8', errors='replace')
+            assert shutdown is None or shutdown.returncode == 0, shutdown.stdout.decode('utf8', errors='replace')
+
 
 
 if __name__ == '__main__':

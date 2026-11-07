@@ -68,6 +68,10 @@ def restore(data, source, username, password):
 
 
 def main():
+    # Console-less or redirected Windows processes may otherwise use an ANSI codec.
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     parser = argparse.ArgumentParser(description='QR Point LAN server')
     parser.add_argument('command', nargs='?', default='serve', choices=['serve', 'init', 'backup', 'restore', 'check', 'stop'])
     default_data = str(Path(os.environ.get('PROGRAMDATA', '.')) / 'QRPointSystem')
