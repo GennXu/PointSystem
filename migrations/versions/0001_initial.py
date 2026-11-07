@@ -6,8 +6,13 @@ down_revision = None
 
 
 def upgrade():
-    # sqlite3 executescript understands trigger bodies containing semicolons.
-    op.get_bind().connection.driver_connection.executescript(SCHEMA)
+    import sqlite3
+    statement = ''
+    for line in SCHEMA.splitlines():
+        statement += line + '\n'
+        if sqlite3.complete_statement(statement):
+            op.execute(statement)
+            statement = ''
 
 
 def downgrade():

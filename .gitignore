@@ -30,3 +30,5 @@ config.json
 SHA256SUMS.txt
 docs/browser-scan.png
 docs/browser-e2e-result.json
+docs/ui-v110-*.png
+docs/ui-v110-result.json

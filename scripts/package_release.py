@@ -15,7 +15,11 @@ if not manual.is_file():
     raise SystemExit('Missing operation manual')
 archive = dist / f'QRPointSystem-{version}.zip'
 with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:
-    for file in [setup, manual, root / 'docs/GITHUB_UPDATES.md']:
-        z.write(file, file.name)
+    release_files = [(setup, 'Setup.exe'), (manual, '操作手冊.pdf'), (root / 'docs/QUICK_START.txt', '開始使用.txt'), (root / 'docs/GITHUB_UPDATES.md', 'GITHUB_UPDATES.md'), (root / 'docs/RELEASE_1.1.0.md', '版本更新說明.md')]
+    checksums = ''
+    for file, name in release_files:
+        z.write(file, name)
+        checksums += hashlib.sha256(file.read_bytes()).hexdigest() + '  ' + name + '\n'
+    z.writestr('SHA256SUMS.txt', checksums)
 (dist / 'SHA256SUMS.txt').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n' for p in [setup, archive]), encoding='utf8')
 print(archive)
