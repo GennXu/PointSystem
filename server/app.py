@@ -70,10 +70,19 @@ class Scan(Model):
 class Transaction(Model):
     idempotency_key: str = Field(min_length=16, max_length=128)
     user_id: str
-    amount: StrictInt = Field(ge=0, le=MAX_POINTS)
+    amount: StrictInt = Field(ge=-MAX_POINTS, le=MAX_POINTS)
     reason: str = Field(min_length=1, max_length=500)
     station_id: str = Field(min_length=1, max_length=80)
     token: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{43}$')
+
+
+class PasswordChange(Model):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=12, max_length=128)
+
+
+class PasswordReset(Model):
+    new_password: str = Field(min_length=12, max_length=128)
 
 
 class Settings(Model):
@@ -163,7 +172,7 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
         thread.join(timeout=2)
         engine.dispose()
 
-    app = FastAPI(title='QR Point System', version='1.0.0', lifespan=lifespan)
+    app = FastAPI(title='QR Point System', version='1.1.0', lifespan=lifespan)
     app.state.engine = engine
     app.state.backup = backup
     app.state.db = db
@@ -279,6 +288,94 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
         response.delete_cookie('session')
         return {'ok': True}
 
+    def verify_password(c, uid, password):
+        account = row(c, 'SELECT password_hash FROM operators WHERE id=:id', {'id': uid})
+        try:
+            ph.verify(account['password_hash'], password)
+        except VerificationError:
+            raise HTTPException(403, '目前密碼錯誤') from None
+
+    @app.post('/api/auth/password')
+    def change_password(body: PasswordChange, response: Response, operator=Depends(current)):
+        strong_password(body.new_password)
+        with write() as c:
+            verify_password(c, operator['id'], body.current_password)
+            if body.current_password == body.new_password:
+                raise HTTPException(422, '新密碼不可與目前密碼相同')
+            c.execute(text('UPDATE operators SET password_hash=:hash WHERE id=:id'), {'hash': ph.hash(body.new_password), 'id': operator['id']})
+            c.execute(text('DELETE FROM sessions WHERE operator_id=:id'), {'id': operator['id']})
+        response.delete_cookie('session')
+        log.info('password_change operator=%s', operator['id'])
+        return {'ok': True, 'message': '密碼已修改，請重新登入'}
+
+    @app.post('/api/operators/{uid}/password')
+    def reset_password(uid: str, body: PasswordReset, operator=Depends(admin)):
+        strong_password(body.new_password)
+        with write() as c:
+            target = row(c, 'SELECT role FROM operators WHERE id=:id', {'id': uid})
+            if not target:
+                raise HTTPException(404, '找不到操作員')
+            if target['role'] != 'Staff':
+                raise HTTPException(403, '管理員僅可重設員工密碼；管理員請使用修改自己的密碼')
+            c.execute(text('UPDATE operators SET password_hash=:hash WHERE id=:id'), {'id': uid, 'hash': ph.hash(body.new_password)})
+            c.execute(text('DELETE FROM sessions WHERE operator_id=:id'), {'id': uid})
+        log.info('password_reset operator=%s target=%s', operator['id'], uid)
+        return {'ok': True}
+
+    def portal_member(request: Request):
+        with engine.connect() as c:
+            result = row(c, """SELECT p.user_id, q.status AS qr_status, q.expires_at AS qr_expires, u.status
+                FROM portal_sessions p JOIN qr_credentials q ON q.id=p.credential_id JOIN users u ON u.id=p.user_id
+                WHERE p.token_hash=:hash AND p.expires_at>:now""", {'hash': digest(request.cookies.get('member_session', '')), 'now': now()})
+        if not result or result['status'] != 'active' or result['qr_status'] != 'active' or (result['qr_expires'] and result['qr_expires'] <= now()):
+            raise HTTPException(401, '查詢已逾時或憑證失效，請重新掃描自己的會員憑證')
+        return result['user_id']
+
+    @app.post('/api/portal/login')
+    def portal_login(body: Scan, request: Request, response: Response):
+        source = 'portal:' + (request.client.host if request.client else 'unknown')
+        with write() as c:
+            attempt = row(c, 'SELECT * FROM login_attempts WHERE source=:s', {'s': source})
+            timestamp = time.time()
+            count = attempt['count'] if attempt and timestamp - attempt['window_start'] < 300 else 0
+            start = attempt['window_start'] if count else timestamp
+            if count >= 30:
+                raise HTTPException(429, '查詢次數過多，請五分鐘後再試')
+            c.execute(text('INSERT OR REPLACE INTO login_attempts VALUES(:s,:n,:t)'), {'s': source, 'n': count + 1, 't': start})
+        with write() as c:
+            user = credential(c, body.token)
+            qr = row(c, 'SELECT id FROM qr_credentials WHERE token_hash=:hash', {'hash': digest(body.token)})
+            session = secrets.token_urlsafe(32)
+            c.execute(text('DELETE FROM portal_sessions WHERE expires_at<=:now'), {'now': now()})
+            c.execute(text('INSERT INTO portal_sessions VALUES(:hash,:uid,:qr,:expires)'), {'hash': digest(session), 'uid': user['id'], 'qr': qr['id'], 'expires': (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()})
+        response.set_cookie('member_session', session, httponly=True, samesite='strict', secure=secure_cookie, max_age=600)
+        return {key: user[key] for key in ('member_code', 'display_name', 'balance')}
+
+    @app.get('/api/portal/me')
+    def portal_me(uid=Depends(portal_member)):
+        with engine.connect() as c:
+            user = get_user(c, uid)
+        return {key: user[key] for key in ('member_code', 'display_name', 'balance')}
+
+    @app.get('/api/portal/transactions')
+    def portal_transactions(limit: int = 50, offset: int = 0, uid=Depends(portal_member)):
+        with engine.connect() as c:
+            records = c.execute(text("""SELECT t.id,t.type,t.delta,t.balance_before,t.balance_after,t.reason,t.created_at,
+                u.display_name AS member_name,o.username AS operator_name FROM transactions t
+                JOIN users u ON u.id=t.user_id JOIN operators o ON o.id=t.operator_id
+                WHERE t.user_id=:uid ORDER BY t.created_at DESC LIMIT :n OFFSET :offset"""), {'uid': uid, 'n': min(max(limit, 1), 100), 'offset': max(offset, 0)}).mappings()
+            return [dict(r) for r in records]
+
+    @app.post('/api/portal/logout')
+    def portal_logout(request: Request, response: Response):
+        # Cross-site forms cannot set this header; session cookie is SameSite strict.
+        if request.headers.get('x-portal-action') != 'logout':
+            raise HTTPException(403, '請從查詢頁面登出')
+        with write() as c:
+            c.execute(text('DELETE FROM portal_sessions WHERE token_hash=:hash'), {'hash': digest(request.cookies.get('member_session', ''))})
+        response.delete_cookie('member_session')
+        return {'ok': True}
+
     @app.post('/api/users')
     def create_member(body: Member, operator=Depends(current)):
         uid = str(uuid.uuid4())
@@ -358,8 +455,8 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
             before = user['balance']
             delta = body.amount if kind == 'GRANT' else -body.amount if kind == 'REDEEM' else body.amount - before
             after = before + delta
-            if after < 0 or after > MAX_POINTS:
-                raise HTTPException(409, '餘額不足或超出安全整數上限')
+            if abs(after) > MAX_POINTS or abs(delta) > MAX_POINTS:
+                raise HTTPException(409, '點數超出安全整數範圍')
             tx = {'id': str(uuid.uuid4()), 'idempotency_key': body.idempotency_key, 'request_hash': request_hash, 'user_id': body.user_id, 'operator_id': operator['id'], 'type': kind, 'delta': delta, 'balance_before': before, 'balance_after': after, 'reason': body.reason, 'station_id': body.station_id, 'created_at': now()}
             updated = c.execute(text('UPDATE users SET balance=:after,version=version+1,updated_at=:now WHERE id=:id AND balance=:before'), {'after': after, 'before': before, 'now': now(), 'id': body.user_id})
             if updated.rowcount != 1:
@@ -383,15 +480,15 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
         return transact('ADJUST', body, operator)
 
     def query_transactions(c, operator, user_id, kind, operator_id, start, end, limit, offset):
-        sql = 'SELECT id,idempotency_key,user_id,operator_id,type,delta,balance_before,balance_after,reason,station_id,created_at FROM transactions WHERE 1=1'
+        sql = '''SELECT t.id,t.idempotency_key,t.user_id,t.operator_id,t.type,t.delta,t.balance_before,t.balance_after,t.reason,t.station_id,t.created_at, u.member_code,u.display_name AS member_name,o.username AS operator_name FROM transactions t JOIN users u ON u.id=t.user_id JOIN operators o ON o.id=t.operator_id WHERE 1=1'''
         params = {}
         for column, value, symbol in [('user_id', user_id, '='), ('type', kind, '='), ('operator_id', operator['id'] if operator['role'] == 'Staff' else operator_id, '='), ('created_at', start, '>='), ('created_at', end, '<=')]:
             if value:
                 key = 'p' + str(len(params))
-                sql += f' AND {column}{symbol}:{key}'
+                sql += f' AND t.{column}{symbol}:{key}'
                 params[key] = value
         params.update(n=limit, offset=offset)
-        return [dict(r) for r in c.execute(text(sql + ' ORDER BY created_at DESC LIMIT :n OFFSET :offset'), params).mappings()]
+        return [dict(r) for r in c.execute(text(sql + ' ORDER BY t.created_at DESC LIMIT :n OFFSET :offset'), params).mappings()]
 
     @app.get('/api/transactions')
     def transactions(user_id: str = '', kind: str = '', operator_id: str = '', start: str = '', end: str = '', limit: int = 100, offset: int = 0, operator=Depends(current)):
@@ -409,6 +506,8 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
     @app.get('/api/transactions/export')
     def export(user_id: str = '', kind: str = '', operator_id: str = '', start: str = '', end: str = '', operator=Depends(current)):
         def safe(value):
+            if isinstance(value, int):
+                return value
             value = str(value)
             return "'" + value if value.lstrip().startswith(('=', '+', '-', '@', '\t', '\r', '\n')) else value
 
@@ -423,8 +522,8 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
                     stream = io.StringIO(newline='')
                     writer = csv.writer(stream)
                     if offset == 0:
-                        writer.writerow(rows[0].keys())
-                    writer.writerows([safe(v) for v in record.values()] for record in rows)
+                        writer.writerow(['交易編號','請求識別碼','會員識別碼','操作員識別碼','交易種類','點數增減','交易前餘額','交易後餘額','原因','工作站','建立時間（世界標準時間）','會員編號','會員名稱','操作員名稱'])
+                    writer.writerows([safe({'GRANT': '發點', 'REDEEM': '扣點', 'ADJUST': '餘額調整'}.get(v, v) if key == 'type' else v) for key, v in record.items()] for record in rows)
                     yield stream.getvalue()
                     offset += len(rows)
         return StreamingResponse(chunks(), media_type='text/csv; charset=utf-8', headers={'Content-Disposition': 'attachment; filename="transactions.csv"'})

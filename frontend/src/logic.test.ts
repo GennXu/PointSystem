@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseToken, points, taipei, requestId } from './logic'
+import { parseToken, points, taipei, requestId, signedPoints, roleLabel, transactionLabel } from './logic'
 describe('掃碼與點數驗證', () => {
   it('在沒有 randomUUID 的 HTTP 環境產生不重複 UUID v4', () => {
     const ids = Array.from({ length: 1000 }, () => requestId())
@@ -16,4 +16,19 @@ describe('掃碼與點數驗證', () => {
     expect(points(500)).toBe(500)
   })
   it('固定使用台北時間', () => { expect(taipei('2026-01-01T00:00:00Z')).toContain('08:00:00') })
+})
+
+describe('負點數與中文名稱', () => {
+  it('目標餘額可為負數，交易額度仍須為正整數', () => {
+    expect(signedPoints(-100)).toBe(-100)
+    for (const n of [-9007199254740992, 9007199254740992, 1.5, NaN]) expect(() => signedPoints(n)).toThrow()
+    expect(() => points(-100)).toThrow()
+  })
+  it('轉換角色與種類名稱', () => {
+    expect(roleLabel('Admin')).toBe('管理員')
+    expect(roleLabel('Staff')).toBe('員工')
+    expect(transactionLabel('GRANT')).toBe('發點')
+    expect(transactionLabel('REDEEM')).toBe('扣點')
+    expect(transactionLabel('ADJUST')).toBe('餘額調整')
+  })
 })

@@ -33,3 +33,15 @@
 grant/adjust 不需要 token。adjust 的 amount 代表目標餘額。全部交易必填原因。成功回傳交易 ID、key、會員/操作者、種類、delta、前後餘額、原因、工作站、UTC 時間。不回傳 QR 或請求雜湊。會員建立/重發 QR 的回應含 token，應避免記錄 response body。
 
 狀態：401 未登入/帳密錯誤；403 權限或 CSRF；404 查無會員/憑證/交易；409 衝突、停用、餘額不足或不同冪等主體；410 撤銷/過期憑證；422 型別/整數/欄位不合法；429 登入限速。未收到明確成功時保留 key 查證，不能改用新 key 自動重送。
+
+
+## 1.1.0 新增端點
+
+- POST /api/auth/password：{current_password,new_password}，需操作員登入與 CSRF，成功後撤銷該帳號所有 Session。
+- POST /api/operators/{id}/password：{new_password}，限 Admin 重設 Staff，撤銷該員工所有 Session。
+- POST /api/portal/login：{token}，驗證 QR 後設 member_session Cookie，十分鐘期限，與操作員 Session 分離。
+- GET /api/portal/me：只回傳 Cookie 所屬會員的編號、名稱及餘額。
+- GET /api/portal/transactions：本人紀錄，支援 limit/offset，不能用 user_id 選擇其他會員。
+- POST /api/portal/logout：需 X-Portal-Action: logout，撤銷 member_session。
+
+點數 amount 在 adjust 可負，grant/redeem 仍須正整數。餘額與單筆 delta 皆須在安全整數範圍內。交易查詢新增 member_code/member_name/operator_name；CSV 標題與交易種類使用繁體中文。

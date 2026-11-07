@@ -75,9 +75,10 @@ def test_concurrent_redeem(system):
     requests = [payload(user, 400, token=user['token']), payload(user, 400, token=user['token'])]
     with concurrent.futures.ThreadPoolExecutor(2) as pool:
         results = list(pool.map(lambda pair: pair[0].post('/api/transactions/redeem', json=pair[1]), zip([client, second], requests)))
-    assert sorted(r.status_code for r in results) == [200, 409]
-    assert balance(client, user) == 100
-    assert len(client.get('/api/transactions').json()) == 2
+    assert sorted(r.status_code for r in results) == [200, 200]
+    assert balance(client, user) == -300
+    assert len(client.get('/api/transactions').json()) == 3
+    assert sorted(r.json()['balance_before'] for r in results) == [100, 500]
 
 
 def test_idempotent_concurrent_and_conflict(system):
@@ -131,8 +132,8 @@ def test_invalid_points(system, amount):
 
 def test_insufficient_overflow_and_adjust(system):
     _, client, user, _ = system
-    assert client.post('/api/transactions/redeem', json=payload(user, 1, token=user['token'])).status_code == 409
-    grant(client, user)
+    assert client.post('/api/transactions/redeem', json=payload(user, 1, token=user['token'])).json()['balance_after'] == -1
+    grant(client, user, 501)
     result = client.post('/api/transactions/adjust', json=payload(user, 300))
     assert result.json()['delta'] == -200
     assert client.post('/api/transactions/adjust', json=payload(user, 0)).json()['balance_after'] == 0
@@ -177,7 +178,7 @@ def test_db_constraints_and_immutable_ledger(system):
     grant(client, user)
     with sqlite3.connect(app.state.db) as db:
         db.execute('PRAGMA foreign_keys=ON')
-        for sql in ["UPDATE users SET balance=-1", "UPDATE users SET balance=1.5", 'DELETE FROM transactions', 'UPDATE transactions SET delta=0', "UPDATE qr_credentials SET user_id='nonexistent'"]:
+        for sql in ["UPDATE users SET balance=-9007199254740992", "UPDATE users SET balance=1.5", 'DELETE FROM transactions', 'UPDATE transactions SET delta=0', "UPDATE qr_credentials SET user_id='nonexistent'"]:
             with pytest.raises(sqlite3.IntegrityError):
                 db.execute(sql)
             db.rollback()
@@ -274,3 +275,100 @@ def test_custom_backup_directory_and_staff_settings(system):
     assert staff.post('/api/transactions/grant', json=payload(user, 25)).status_code == 200
     assert staff.put('/api/settings', json=config).status_code == 403
     custom.state.engine.dispose()
+
+
+def test_password_change_invalidates_all_sessions(system):
+    app, client, user, _ = system
+    second = auth(app)
+    bad = client.post('/api/auth/password', json={'current_password': 'wrong', 'new_password': 'Changed-Test-9284'})
+    assert bad.status_code == 403
+    assert client.post('/api/auth/password', json={'current_password': PASSWORD, 'new_password': 'weak'}).status_code == 422
+    assert client.post('/api/auth/password', json={'current_password': PASSWORD, 'new_password': PASSWORD}).status_code == 422
+    assert client.post('/api/auth/password', json={'current_password': PASSWORD, 'new_password': 'Changed-Test-9284'}).status_code == 200
+    assert client.get('/api/auth/me').status_code == 401
+    assert second.get('/api/auth/me').status_code == 401
+    old_login = TestClient(app).post('/api/auth/login', json={'username': 'test-admin', 'password': PASSWORD})
+    assert old_login.status_code == 401
+    assert auth(app, password='Changed-Test-9284').get('/api/auth/me').status_code == 200
+
+
+def test_staff_change_and_admin_reset_password(system):
+    app, admin, user, _ = system
+    staff_id = admin.post('/api/operators', json={'username': 'test-staff', 'password': PASSWORD, 'role': 'Staff'}).json()['id']
+    staff = auth(app, 'test-staff')
+    assert staff.post('/api/auth/password', json={'current_password': PASSWORD, 'new_password': 'Staff-Changed-9284'}).status_code == 200
+    staff = auth(app, 'test-staff', 'Staff-Changed-9284')
+    assert staff.post('/api/operators/' + staff_id + '/password', json={'new_password': 'Staff-Reset-9284'}).status_code == 403
+    assert admin.post('/api/operators/' + staff_id + '/password', json={'new_password': 'Staff-Reset-9284'}).status_code == 200
+    assert staff.get('/api/auth/me').status_code == 401
+    assert auth(app, 'test-staff', 'Staff-Reset-9284').get('/api/auth/me').status_code == 200
+    own_id = admin.get('/api/auth/me').json()['id']
+    assert admin.post('/api/operators/' + own_id + '/password', json={'new_password': 'Admin-Reset-9284'}).status_code == 403
+
+
+def test_member_portal_only_own_readonly_records(system):
+    app, client, user, _ = system
+    grant(client, user)
+    other = client.post('/api/users', json={'member_code': 'TEST-OTHER', 'display_name': '另一位會員'}).json()
+    grant(client, other, 200)
+    member = TestClient(app)
+    assert member.get('/api/portal/me').status_code == 401
+    login = member.post('/api/portal/login', json={'token': user['token']})
+    assert login.status_code == 200
+    assert login.json() == {'member_code': user['member_code'], 'display_name': user['display_name'], 'balance': 500}
+    records = member.get('/api/portal/transactions', params={'user_id': other['id']}).json()
+    assert len(records) == 1 and records[0]['member_name'] == user['display_name']
+    assert records[0]['operator_name'] == 'test-admin'
+    assert 'station_id' not in records[0] and 'idempotency_key' not in records[0]
+    for path in ['/api/users', '/api/transactions', '/api/operators', '/api/transactions/export']:
+        assert member.get(path).status_code == 401
+    assert member.post('/api/transactions/grant', json=payload(user, 50)).status_code == 401
+    assert member.post('/api/portal/logout').status_code == 403
+    assert member.post('/api/portal/logout', headers={'X-Portal-Action': 'logout'}).status_code == 200
+    assert member.get('/api/portal/me').status_code == 401
+
+
+def test_member_session_revoked_with_qr_and_disable(system):
+    app, client, user, _ = system
+    member = TestClient(app)
+    member.post('/api/portal/login', json={'token': user['token']})
+    new = client.post('/api/users/' + user['id'] + '/qr/reissue').json()['token']
+    assert member.get('/api/portal/transactions').status_code == 401
+    assert member.post('/api/portal/login', json={'token': user['token']}).status_code == 410
+    assert member.post('/api/portal/login', json={'token': new}).status_code == 200
+    client.patch('/api/users/' + user['id'], json={'status': 'disabled'})
+    assert member.get('/api/portal/me').status_code == 401
+
+
+def test_portal_expiry_and_login_rate_limit(system):
+    app, client, user, data = system
+    member = TestClient(app)
+    member.post('/api/portal/login', json={'token': user['token']})
+    with sqlite3.connect(data / 'points.db') as db:
+        db.execute("UPDATE portal_sessions SET expires_at='2000-01-01T00:00:00+00:00'")
+    assert member.get('/api/portal/me').status_code == 401
+    for _ in range(29):
+        assert member.post('/api/portal/login', json={'token': 'x' * 43}).status_code == 404
+    assert member.post('/api/portal/login', json={'token': user['token']}).status_code == 429
+
+
+def test_negative_adjust_lower_limit_and_delta_safety(system):
+    _, client, user, _ = system
+    assert client.post('/api/transactions/adjust', json=payload(user, -50)).json()['balance_after'] == -50
+    assert client.post('/api/transactions/grant', json=payload(user, 10)).json()['balance_after'] == -40
+    assert client.post('/api/transactions/adjust', json=payload(user, -9007199254740991)).status_code == 200
+    assert client.post('/api/transactions/redeem', json=payload(user, 1, token=user['token'])).status_code == 409
+    assert client.post('/api/transactions/adjust', json=payload(user, 9007199254740991)).status_code == 409
+    assert client.post('/api/transactions/redeem', json=payload(user, -1, token=user['token'])).status_code == 422
+
+
+def test_transaction_names_and_chinese_csv(system):
+    _, client, user, _ = system
+    grant(client, user)
+    tx = client.get('/api/transactions').json()[0]
+    assert tx['member_name'] == user['display_name']
+    assert tx['member_code'] == user['member_code']
+    assert tx['operator_name'] == 'test-admin'
+    csv = client.get('/api/transactions/export').text
+    assert '會員名稱' in csv and '操作員名稱' in csv and '發點' in csv
+    assert user['display_name'] in csv

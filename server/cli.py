@@ -62,6 +62,7 @@ def restore(data, source, username, password):
         snapshot(source, db)
         with sqlite3.connect(db) as restored:
             restored.execute('DELETE FROM sessions')
+            restored.execute('DELETE FROM portal_sessions')
             if restored.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
                 raise RuntimeError('還原後完整性檢查失敗')
 
@@ -85,19 +86,22 @@ def main():
     data.mkdir(parents=True, exist_ok=True)
     config_file = data / 'config.json'
     config = json.loads(config_file.read_text(encoding='utf-8-sig')) if config_file.exists() else {}
+    if bool(config.get('tls_certfile')) != bool(config.get('tls_keyfile')):
+        raise RuntimeError('HTTPS 憑證與私密金鑰必須同時設定')
+    scheme = 'https' if config.get('tls_certfile') else 'http'
     if args.command == 'init':
         with InstanceLock(data):
-            username = input('Admin username: ').strip()
-            password = getpass.getpass('Password (12+ chars, letters and digits): ')
-            if password != getpass.getpass('Confirm password: '):
+            username = input('管理員帳號： ').strip()
+            password = getpass.getpass('密碼（至少 12 字元，含英文字母與數字）： ')
+            if password != getpass.getpass('再次輸入密碼： '):
                 raise RuntimeError('密碼不一致')
             initialize(data, username, password)
-        print('Admin created. Run QRPointServer.exe to start.')
+        print('管理員已建立，請啟動伺服器。')
     elif args.command == 'restore':
         if not args.file:
             parser.error('restore requires --file')
-        restore(data, args.file, input('Admin username: '), getpass.getpass('Admin password: '))
-        print('Restore verified. Start server again.')
+        restore(data, args.file, input('管理員帳號： '), getpass.getpass('管理員密碼： '))
+        print('還原已完成並驗證，請重新啟動伺服器。')
     elif args.command == 'backup':
         backup_dir = Path(config.get('backup_dir', str(data / 'backups')))
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -106,23 +110,23 @@ def main():
         with sqlite3.connect(data / 'points.db') as db:
             print('integrity_check:', db.execute('PRAGMA integrity_check').fetchone()[0])
             print('foreign_key_check:', db.execute('PRAGMA foreign_key_check').fetchall())
-        print('LAN candidates:', socket.gethostbyname_ex(socket.gethostname())[2])
-        print('Port:', args.port or config.get('port', 8080))
+        print('區域網路位址候選：', socket.gethostbyname_ex(socket.gethostname())[2])
+        print('連接埠：', args.port or config.get('port', 8080))
     elif args.command == 'stop':
         (data / 'stop.request').write_text('stop', encoding='ascii')
-        print('Graceful shutdown requested. Wait for server exit before restore.')
+        print('已要求正常停止服務，請等待伺服器退出後再還原。')
     else:
         with InstanceLock(data):
             from server.app import create_app
             root = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent))
-            app = create_app(data, root / 'frontend' / 'dist', config.get('secure_cookie', False), config.get('backup_dir'))
+            app = create_app(data, root / 'frontend' / 'dist', bool(config.get('tls_certfile')) or config.get('secure_cookie', False), config.get('backup_dir'))
             with app.state.engine.connect() as c:
                 from sqlalchemy import text
                 if not c.execute(text('SELECT count(*) FROM operators')).scalar():
                     raise RuntimeError('請先在本機執行 QRPointServer.exe init 建立管理員')
             stop_file = data / 'stop.request'
             stop_file.unlink(missing_ok=True)
-            server = uvicorn.Server(uvicorn.Config(app, host='0.0.0.0', port=args.port or config.get('port', 8080), http='httptools', access_log=False, use_colors=False))
+            server = uvicorn.Server(uvicorn.Config(app, host='0.0.0.0', port=args.port or config.get('port', 8080), http='httptools', access_log=False, use_colors=False, ssl_certfile=config.get('tls_certfile'), ssl_keyfile=config.get('tls_keyfile')))
             import threading
             done = threading.Event()
 
@@ -145,10 +149,10 @@ def main():
                     return False
                 ctypes.windll.kernel32.SetConsoleCtrlHandler(console_handler, True)
             try:
-                print('HTTP is unencrypted. Use only a trusted isolated LAN. Port:', args.port or config.get('port', 8080))
+                print('HTTPS 加密服務' if scheme == 'https' else 'HTTP 未加密，請僅在可信任的隔離區域網路使用。', '連接埠：', args.port or config.get('port', 8080))
                 for address in socket.gethostbyname_ex(socket.gethostname())[2]:
                     if not address.startswith('127.'):
-                        print(f'LAN browser URL: http://{address}:{args.port or config.get("port", 8080)}')
+                        print(f'區域網路瀏覽網址：{scheme}://{address}:{args.port or config.get("port", 8080)}')
                 server.run()
             finally:
                 done.set()

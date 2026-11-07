@@ -19,3 +19,10 @@ export function points(value: number, zero = false): number {
 export function taipei(value: string): string {
   return new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', dateStyle: 'short', timeStyle: 'medium', hour12: false }).format(new Date(value))
 }
+
+export function signedPoints(value: number): number {
+  if (!Number.isSafeInteger(value) || Math.abs(value) > MAX) throw new Error('請輸入安全範圍內的整數點數')
+  return value
+}
+export function roleLabel(value: string): string { return ({ Admin: '管理員', Staff: '員工' } as Record<string, string>)[value] || value }
+export function transactionLabel(value: string): string { return ({ GRANT: '發點', REDEEM: '扣點', ADJUST: '餘額調整' } as Record<string, string>)[value] || value }

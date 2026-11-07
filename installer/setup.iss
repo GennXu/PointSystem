@@ -1,10 +1,10 @@
-#define AppName "QRPointSystem"
+﻿#define AppName "QRPointSystem"
 [Setup]
 AppId={{DCF730C7-7AA1-4759-9312-937152549726}
 AppName={#AppName}
-AppVersion=1.0.1
+AppVersion=1.1.0
 DefaultDirName={autopf}\QRPointSystem
-DefaultGroupName=QR Point System
+DefaultGroupName=QR 點數系統
 OutputDir=..\dist
 OutputBaseFilename=Setup
 PrivilegesRequired=admin
@@ -16,6 +16,9 @@ UninstallDisplayIcon={app}\QRPointServer.exe
 CloseApplications=no
 SetupLogging=yes
 
+[Languages]
+Name: "chinesetraditional"; MessagesFile: "ChineseTraditional.isl"
+
 [Files]
 Source: "..\dist\QRPointServer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
@@ -24,14 +27,14 @@ Name: "{code:DataDir}"
 Name: "{code:BackupDir}"
 
 [Tasks]
-Name: "firewall"; Description: "Allow inbound TCP only for the specified trusted LAN on Private profile (administrator change)"; Flags: unchecked
-Name: "autostart"; Description: "Start server when the installing Windows user logs on (administrator change)"; Flags: unchecked
+Name: "firewall"; Description: "僅允許指定可信任私人網段的 TCP 連入（需管理員權限）"; Flags: unchecked
+Name: "autostart"; Description: "安裝者登入 Windows 後自動啟動服務（需管理員權限）"; Flags: unchecked
 
 [Icons]
-Name: "{group}\Start server"; Filename: "{app}\QRPointServer.exe"
-Name: "{group}\Initialize Admin (first install only)"; Filename: "{app}\QRPointServer.exe"; Parameters: "init"
-Name: "{group}\Stop server gracefully"; Filename: "{app}\stop_server.bat"
-Name: "{group}\Check system"; Filename: "{app}\check_system.bat"
+Name: "{group}\啟動伺服器"; Filename: "{app}\QRPointServer.exe"
+Name: "{group}\建立初始管理員（僅首次安裝）"; Filename: "{app}\QRPointServer.exe"; Parameters: "init"
+Name: "{group}\正常停止伺服器"; Filename: "{app}\stop_server.bat"
+Name: "{group}\檢查系統"; Filename: "{app}\check_system.bat"
 
 [Registry]
 Root: HKLM64; Subkey: "Software\QRPointSystem"; ValueType: string; ValueName: "DataDir"; ValueData: "{code:DataDir}"
@@ -79,14 +82,14 @@ end;
 procedure InitializeWizard;
 var ExistingDir: String;
 begin
-  ConfigPage := CreateInputQueryPage(wpSelectDir, 'LAN configuration and data access',
-    'Only PC-01 needs this installer',
-    'Data/backups: ProgramData\QRPointSystem (preserved on uninstall). HTTP is unencrypted. Choose a trusted LAN. Existing config is preserved. Enter the Windows account that will run the server.');
-  ConfigPage.Add('TCP port (1-65535):', False);
-  ConfigPage.Add('Trusted IPv4 LAN subnet CIDR (e.g. 192.168.10.0/24):', False);
-  ConfigPage.Add('Data owner Windows account (DOMAIN\User):', False);
-  ConfigPage.Add('Data directory (local NTFS, not a network share):', False);
-  ConfigPage.Add('Backup directory:', False);
+  ConfigPage := CreateInputQueryPage(wpSelectDir, '區域網路與資料存取設定',
+    '只有伺服器主機需要安裝',
+    '資料與備份在解除安裝後會保留。HTTP 未加密，請選可信任區域網路。既有設定會保留，請指定執行服務的 Windows 帳號。');
+  ConfigPage.Add('TCP 連接埠（1 至 65535）：', False);
+  ConfigPage.Add('可信任的私人 IPv4 網段（例如 192.168.1.0/24）：', False);
+  ConfigPage.Add('資料擁有者 Windows 帳號（網域\使用者）：', False);
+  ConfigPage.Add('資料目錄（本機磁碟，請勿使用網路共用）：', False);
+  ConfigPage.Add('備份目錄：', False);
   ConfigPage.Values[0] := '8080';
   ConfigPage.Values[1] := '';
   ConfigPage.Values[2] := ExpandConstant('{userinfoname}');
@@ -135,7 +138,7 @@ begin
       (Copy(ConfigPage.Values[3], 1, 2) = '\\') or
       (Pos('"', ConfigPage.Values[2]) > 0) or
       (WizardIsTaskSelected('firewall') and not ValidCIDR(ConfigPage.Values[1])) then begin
-      MsgBox('Enter valid port, Windows data owner, and private IPv4 CIDR for firewall.', mbError, MB_OK);
+      MsgBox('請輸入有效的連接埠、Windows 資料擁有者及私人防火牆網段。', mbError, MB_OK);
       Result := False;
     end;
   end;
