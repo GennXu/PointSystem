@@ -123,7 +123,7 @@ def test_qr_reissue_disabled_and_download(system):
     assert client.post('/api/transactions/grant', json=payload(user, 50)).status_code == 409
 
 
-@pytest.mark.parametrize('amount', [0, -1, 1.2, '50', True, 9007199254740992])
+@pytest.mark.parametrize('amount', [0, -1, 1.2, '50', True, 4503599627370496])
 def test_invalid_points(system, amount):
     _, client, user, _ = system
     assert client.post('/api/transactions/grant', json=payload(user, amount)).status_code == 422
@@ -137,7 +137,7 @@ def test_insufficient_overflow_and_adjust(system):
     result = client.post('/api/transactions/adjust', json=payload(user, 300))
     assert result.json()['delta'] == -200
     assert client.post('/api/transactions/adjust', json=payload(user, 0)).json()['balance_after'] == 0
-    grant(client, user, 9007199254740991)
+    grant(client, user, 4503599627370495)
     assert client.post('/api/transactions/grant', json=payload(user, 1)).status_code == 409
     assert client.post('/api/transactions/adjust', json=payload(user, 100, reason='')).status_code == 422
 
@@ -178,7 +178,7 @@ def test_db_constraints_and_immutable_ledger(system):
     grant(client, user)
     with sqlite3.connect(app.state.db) as db:
         db.execute('PRAGMA foreign_keys=ON')
-        for sql in ["UPDATE users SET balance=-9007199254740992", "UPDATE users SET balance=1.5", 'DELETE FROM transactions', 'UPDATE transactions SET delta=0', "UPDATE qr_credentials SET user_id='nonexistent'"]:
+        for sql in ["UPDATE users SET balance=-9007199254740992", "UPDATE users SET balance=1.25", 'DELETE FROM transactions', 'UPDATE transactions SET delta=0', "UPDATE qr_credentials SET user_id='nonexistent'"]:
             with pytest.raises(sqlite3.IntegrityError):
                 db.execute(sql)
             db.rollback()
@@ -356,9 +356,9 @@ def test_negative_adjust_lower_limit_and_delta_safety(system):
     _, client, user, _ = system
     assert client.post('/api/transactions/adjust', json=payload(user, -50)).json()['balance_after'] == -50
     assert client.post('/api/transactions/grant', json=payload(user, 10)).json()['balance_after'] == -40
-    assert client.post('/api/transactions/adjust', json=payload(user, -9007199254740991)).status_code == 200
+    assert client.post('/api/transactions/adjust', json=payload(user, -4503599627370495)).status_code == 200
     assert client.post('/api/transactions/redeem', json=payload(user, 1, token=user['token'])).status_code == 409
-    assert client.post('/api/transactions/adjust', json=payload(user, 9007199254740991)).status_code == 409
+    assert client.post('/api/transactions/adjust', json=payload(user, 4503599627370495)).status_code == 409
     assert client.post('/api/transactions/redeem', json=payload(user, -1, token=user['token'])).status_code == 422
 
 

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "QR Point System",
-    "version": "1.1.0"
+    "version": "1.2.0"
   },
   "paths": {
     "/api/health": {
@@ -380,7 +380,68 @@
         }
       }
     },
+    "/api/users/import": {
+      "post": {
+        "summary": "Import Members",
+        "operationId": "import_members_api_users_import_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/users/{uid}": {
+      "put": {
+        "summary": "Edit Member",
+        "operationId": "edit_member_api_users__uid__put",
+        "parameters": [
+          {
+            "name": "uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Uid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Member"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "get": {
         "summary": "Member",
         "operationId": "member_api_users__uid__get",
@@ -754,6 +815,16 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "member_code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Member Code"
+            }
           }
         ],
         "responses": {
@@ -868,6 +939,16 @@
               "type": "string",
               "default": "",
               "title": "End"
+            }
+          },
+          {
+            "name": "member_code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Member Code"
             }
           }
         ],
@@ -1221,7 +1302,10 @@
         "properties": {
           "grant_presets": {
             "items": {
-              "type": "integer"
+              "type": "number",
+              "ge": -4503599627370495,
+              "le": 4503599627370495,
+              "multiple_of": 0.5
             },
             "type": "array",
             "maxItems": 12,
@@ -1229,10 +1313,13 @@
             "title": "Grant Presets"
           },
           "staff_limit": {
-            "type": "integer",
-            "maximum": 9007199254740991.0,
-            "minimum": 1.0,
-            "title": "Staff Limit"
+            "type": "number",
+            "maximum": 4503599627370495.0,
+            "minimum": 0.5,
+            "title": "Staff Limit",
+            "ge": -4503599627370495,
+            "le": 4503599627370495,
+            "multiple_of": 0.5
           },
           "backup_hour": {
             "type": "integer",
@@ -1285,10 +1372,11 @@
             "title": "User Id"
           },
           "amount": {
-            "type": "integer",
-            "maximum": 9007199254740991.0,
-            "minimum": -9007199254740991.0,
-            "title": "Amount"
+            "type": "number",
+            "title": "Amount",
+            "ge": -4503599627370495,
+            "le": 4503599627370495,
+            "multiple_of": 0.5
           },
           "reason": {
             "type": "string",
@@ -1313,6 +1401,18 @@
               }
             ],
             "title": "Token"
+          },
+          "occurred_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Occurred At"
           }
         },
         "additionalProperties": false,

@@ -47,7 +47,7 @@ def main():
         with socket.socket() as address:
             address.bind(('127.0.0.1', 0))
             port = address.getsockname()[1]
-        (data / 'config.json').write_text(json.dumps({'port': port, 'tls_certfile': str(cert), 'tls_keyfile': str(private)}), encoding='utf8')
+        (data / 'config.json').write_text(json.dumps({'allow_sqlite_development': True, 'port': port, 'tls_certfile': str(cert), 'tls_keyfile': str(private)}), encoding='utf8')
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=str(cert))), urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         log = (data / 'server.log').open('wb')
         server_env = dict(os.environ, PYTHONIOENCODING='ascii')

@@ -10,18 +10,21 @@ describe('掃碼與點數驗證', () => {
     expect(parseToken('a'.repeat(43) + '\r\n')).toBe('a'.repeat(43))
     for (const value of ['https://example.org', '<script>', '', 'a'.repeat(44)]) expect(() => parseToken(value)).toThrow()
   })
-  it('拒絕零、負數、小數與不安全整數', () => {
-    for (const value of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN]) expect(() => points(value)).toThrow()
+  it('拒絕零、負數、非半點小數與不安全整數', () => {
+    for (const value of [0, -1, 1.25, Number.MAX_SAFE_INTEGER + 1, NaN]) expect(() => points(value)).toThrow()
     expect(points(0, true)).toBe(0)
     expect(points(500)).toBe(500)
+    expect(points(0.5)).toBe(0.5)
+    expect(points(1.5)).toBe(1.5)
   })
   it('固定使用台北時間', () => { expect(taipei('2026-01-01T00:00:00Z')).toContain('08:00:00') })
 })
 
 describe('負點數與中文名稱', () => {
-  it('目標餘額可為負數，交易額度仍須為正整數', () => {
+  it('目標餘額可為負數，交易額度仍須為0.5 的正倍數', () => {
     expect(signedPoints(-100)).toBe(-100)
-    for (const n of [-9007199254740992, 9007199254740992, 1.5, NaN]) expect(() => signedPoints(n)).toThrow()
+    expect(signedPoints(-0.5)).toBe(-0.5)
+    for (const n of [-9007199254740992, 9007199254740992, 1.25, NaN]) expect(() => signedPoints(n)).toThrow()
     expect(() => points(-100)).toThrow()
   })
   it('轉換角色與種類名稱', () => {

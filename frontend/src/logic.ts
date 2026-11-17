@@ -1,4 +1,4 @@
-export const MAX = 9007199254740991
+export const MAX = 4503599627370495
 // getRandomValues is available on isolated LAN HTTP; randomUUID requires HTTPS/localhost.
 export function requestId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16))
@@ -13,7 +13,7 @@ export function parseToken(value: string): string {
   return token
 }
 export function points(value: number, zero = false): number {
-  if (!Number.isSafeInteger(value) || value < (zero ? 0 : 1) || value > MAX) throw new Error('請輸入有效整數點數')
+  if (!Number.isSafeInteger(value * 2) || value < (zero ? 0 : 0.5) || value > MAX) throw new Error('請輸入以 0.5 為單位的點數')
   return value
 }
 export function taipei(value: string): string {
@@ -21,7 +21,7 @@ export function taipei(value: string): string {
 }
 
 export function signedPoints(value: number): number {
-  if (!Number.isSafeInteger(value) || Math.abs(value) > MAX) throw new Error('請輸入安全範圍內的整數點數')
+  if (!Number.isSafeInteger(value * 2) || Math.abs(value) > MAX) throw new Error('請輸入安全範圍內以 0.5 為單位的點數')
   return value
 }
 export function roleLabel(value: string): string { return ({ Admin: '管理員', Staff: '員工' } as Record<string, string>)[value] || value }

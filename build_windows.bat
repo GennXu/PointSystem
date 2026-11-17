@@ -18,11 +18,15 @@ popd
 if errorlevel 1 exit /b 1
 %PYTHON% -m ruff check server tests migrations launcher.py
 if errorlevel 1 exit /b 1
-%PYTHON% -m PyInstaller --noconfirm --clean --onedir --name QRPointServer --add-data "frontend/dist;frontend/dist" --add-data "migrations;migrations" --collect-all alembic --collect-all qrcode --hidden-import uvicorn.protocols.http.httptools_impl --additional-hooks-dir hooks launcher.py
+%PYTHON% -m PyInstaller --noconfirm --clean --onedir --name QRPointServer --add-data "frontend/dist;frontend/dist" --add-data "migrations;migrations" --collect-all alembic --collect-all qrcode --collect-all openpyxl --hidden-import sqlalchemy.dialects.mssql.pyodbc --hidden-import pyodbc --hidden-import uvicorn.protocols.http.httptools_impl --additional-hooks-dir hooks launcher.py
 if errorlevel 1 exit /b 1
 copy /y *.bat dist\QRPointServer\ >nul
 copy /y config.example.json dist\QRPointServer\ >nul
 copy /y README.md dist\QRPointServer\ >nul
+if not exist dist\QRPointServer\docs mkdir dist\QRPointServer\docs
+copy /y docs\SQL_EXPRESS.md dist\QRPointServer\docs\ >nul
+copy /y docs\HTTPS_MOBILE.md dist\QRPointServer\docs\ >nul
+copy /y docs\RELEASE_1.2.0.md dist\QRPointServer\docs\ >nul
 "%ISCC%" installer\setup.iss
 if errorlevel 1 exit /b 1
 echo Build complete: dist\QRPointServer and dist\Setup.exe

@@ -21,7 +21,7 @@ function accept(text: string) {
 async function start() {
   if (starting.value || active.value) return
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-    message.value = '即時相機需要 HTTPS 或主機本機網址 localhost。區域網路 HTTP 請改用圖片辨識或 USB 掃描器。'; return
+    message.value = '手機相機需要受信任的 HTTPS 連線。請使用管理員提供的 HTTPS 網址，並完成手機 CA 憑證信任設定，再允許相機權限。'; return
   }
   const attempt = ++generation
   starting.value = true; active.value = true; message.value = '請允許相機權限，將會員圖碼置於鏡頭前'

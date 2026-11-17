@@ -1,1 +1,1 @@
-{"port":8080,"secure_cookie":false,"tls_certfile":null,"tls_keyfile":null}
+{"port":8080,"secure_cookie":false,"tls_certfile":null,"tls_keyfile":null,"database_url":"mssql+pyodbc://@.\\SQLEXPRESS/QRPointSystem?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes","backup_dir":"C:\\ProgramData\\QRPointSystem\\backups"}

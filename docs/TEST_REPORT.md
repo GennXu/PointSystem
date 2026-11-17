@@ -1,5 +1,19 @@
 # 驗收測試報告
 
+## 1.2.0 本次修改驗證（2026-11-17，Asia/Taipei）
+
+環境：Windows、Python 3.14.6、Node 24.22.1、pnpm 11.25.0。以下為本次實際結果；後文為舊版歷史報告。
+
+- 後端 pytest：40 passed、2 skipped。含會員編輯與 QR 關聯、半點並行寫入／精度邊界、補登與時區篩選、Excel 原子匯入、角色限制、舊版升級、移轉內容雜湊與失敗回滾，以及 HTTPS 憑證產生、受信任 TLS socket 握手、同 CA 續期與錯誤密碼保護。
+- 前端 Vitest：6 passed。Vue 型別檢查及 Vite 正式建置通過。
+- Python Ruff、Git diff whitespace、PowerShell 建置腳本語法檢查通過；SQL Server 建表定義已由 SQLAlchemy MSSQL dialect 編譯驗證，OpenAPI 已重新產生。
+- 2 項 skipped 為需要真實 SQL Server 的跨 API 實例並行及 SQLite → SQL Server 移轉測試；本機尚未安裝 SQL Express，未宣稱 SQL 實際執行通過。一般移轉／回滾測試使用 SQLite 隔離目標驗證轉移流程，不取代 SQL 整合測試。
+- SQL Express 安裝腳本、真實多設備寫入、.bak 備份驗證與還原仍待安裝後現場驗收。新版 EXE／安裝包尚未於本次建置。
+
+建置與驗收命令見 [SQL Express 文件](SQL_EXPRESS.md)。
+
+手機 HTTPS 建置與 iOS／Android 信任設定見 [HTTPS_MOBILE.md](HTTPS_MOBILE.md)。本次 TLS 測試使用隔離測試憑證與本機 SSL 連線；未在正式主機安裝憑證，實體手機相機與信任設定仍需現場驗收。
+
 測試日期：2026-10-27（Asia/Taipei）。環境：Windows 10 x64 build 19044、Python 3.12.14；Edge headless 156.0.4314.50。所有帳號、會員、Token、工作站與點數均為獨立暫存資料庫的**測試資料**，不包含正式帳密或正式會員。
 
 ## 已完成的自動驗證

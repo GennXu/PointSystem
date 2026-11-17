@@ -13,6 +13,7 @@ import uvicorn
 
 from server.app import initialize, ph
 from server.database import snapshot
+from server.sqlserver import configured_url, create_engine, initialize_schema, restore_database, write_transaction
 
 
 class InstanceLock:
@@ -40,6 +41,39 @@ class InstanceLock:
 def restore(data, source, username, password):
     # The server holds the same OS lock throughout its lifespan.
     with InstanceLock(data):
+        url = configured_url(data)
+        if url:
+            from server.app import create_app
+            from cryptography.fernet import Fernet
+            from sqlalchemy import text
+            engine = create_engine(url, hide_parameters=True)
+            with engine.connect() as connection:
+                account = connection.execute(text("SELECT password_hash FROM operators WHERE username=:name AND role='Admin' AND status='active'"), {'name': username}).scalar()
+                if not account or not ph.verify(account, password):
+                    raise RuntimeError('管理員驗證失敗')
+            app = create_app(data)
+            safety_name = app.state.backup()
+            settings_file = data / 'config.json'
+            settings = json.loads(settings_file.read_text(encoding='utf-8-sig')) if settings_file.exists() else {}
+            safety_copy = Path(settings.get('backup_dir', str(data / 'backups'))) / safety_name
+            app.state.engine.dispose()
+            try:
+                restore_database(engine, Path(source).resolve())
+                initialize_schema(engine)
+                cipher = Fernet((data / 'secret.key').read_bytes())
+                with engine.connect().execution_options(isolation_level='AUTOCOMMIT') as connection:
+                    connection.exec_driver_sql('DBCC CHECKDB WITH NO_INFOMSGS')
+                with write_transaction(engine) as connection:
+                    for record in connection.execute(text('SELECT token_cipher FROM qr_credentials')):
+                        cipher.decrypt(record[0].encode())
+                    connection.execute(text('DELETE FROM sessions'))
+                    connection.execute(text('DELETE FROM portal_sessions'))
+            except BaseException:
+                restore_database(engine, safety_copy)
+                raise
+            finally:
+                engine.dispose()
+            return
         db = data / 'points.db'
         with sqlite3.connect(db) as current:
             row = current.execute("SELECT password_hash FROM operators WHERE username=? AND role='Admin' AND status='active'", (username,)).fetchone()
@@ -73,7 +107,7 @@ def main():
         if stream is not None and hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     parser = argparse.ArgumentParser(description='QR Point LAN server')
-    parser.add_argument('command', nargs='?', default='serve', choices=['serve', 'init', 'backup', 'restore', 'check', 'stop'])
+    parser.add_argument('command', nargs='?', default='serve', choices=['serve', 'init', 'backup', 'restore', 'check', 'stop', 'schema', 'migrate-sqlite', 'provision', 'verify-backup', 'https-setup'])
     default_data = str(Path(os.environ.get('PROGRAMDATA', '.')) / 'QRPointSystem')
     if os.name == 'nt':
         import winreg
@@ -85,15 +119,70 @@ def main():
     parser.add_argument('--data-dir', default=os.environ.get('QRPOINT_DATA', default_data))
     parser.add_argument('--port', type=int)
     parser.add_argument('--file')
+    parser.add_argument('--key-file')
+    parser.add_argument('--server', default=r'.\SQLEXPRESS')
+    parser.add_argument('--database', default='QRPointSystem')
+    parser.add_argument('--app-account')
+    parser.add_argument('--backup-dir')
+    parser.add_argument('--ip', action='append', default=[])
+    parser.add_argument('--dns', action='append', default=[])
     args = parser.parse_args()
     data = Path(args.data_dir).resolve()
     data.mkdir(parents=True, exist_ok=True)
     config_file = data / 'config.json'
     config = json.loads(config_file.read_text(encoding='utf-8-sig')) if config_file.exists() else {}
+    url = configured_url(data)
+    if args.command in ('serve', 'init', 'schema', 'migrate-sqlite') and not url and not config.get('allow_sqlite_development'):
+        raise RuntimeError('請先依 docs/SQL_EXPRESS.md 設定 database_url；SQLite 僅保留為移轉來源及開發測試用途')
     if bool(config.get('tls_certfile')) != bool(config.get('tls_keyfile')):
         raise RuntimeError('HTTPS 憑證與私密金鑰必須同時設定')
     scheme = 'https' if config.get('tls_certfile') else 'http'
-    if args.command == 'init':
+    if args.command == 'https-setup':
+        from server.https_setup import configure_https
+        with InstanceLock(data):
+            password = getpass.getpass('CA 保護密碼（至少 12 字元，續期時輸入原密碼）： ')
+            if password != getpass.getpass('再次輸入 CA 密碼： '):
+                raise RuntimeError('密碼不一致')
+            result = configure_https(data, args.ip, args.dns, password, args.port)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print('請只將 certificate 指定的 .cer 公開憑證安裝到手機，保留密碼並依 docs/HTTPS_MOBILE.md 設定信任。')
+    elif args.command == 'verify-backup':
+        if not url or not args.file:
+            parser.error('verify-backup requires database_url and --file')
+        from server.sqlserver import verify_backup
+        engine = create_engine(url, hide_parameters=True)
+        try:
+            verify_backup(engine, Path(args.file).resolve())
+        finally:
+            engine.dispose()
+        print('SQL 備份驗證通過。')
+    elif args.command == 'provision':
+        if not args.app_account or not args.backup_dir:
+            parser.error('provision requires --app-account and --backup-dir')
+        from server.provision import provision
+        provision(data, args.server, args.database, args.app_account, args.backup_dir)
+    elif args.command == 'schema':
+        engine = create_engine(url, hide_parameters=True)
+        try:
+            initialize_schema(engine)
+        finally:
+            engine.dispose()
+        print('SQL Server schema 已建立並驗證。')
+    elif args.command == 'migrate-sqlite':
+        if not args.file or not args.key_file or not url:
+            parser.error('migrate-sqlite requires --file, --key-file and database_url')
+        from server.transfer import transfer
+        engine = create_engine(url, hide_parameters=True)
+        try:
+            initialize_schema(engine)
+            source = Path(args.file).resolve()
+            with InstanceLock(source.parent):
+                report = transfer(source, args.key_file, data, engine)
+            (data / 'migration-report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+            print('移轉完成，原資料庫未變更；請核對 migration-report.json 並重新登入。')
+        finally:
+            engine.dispose()
+    elif args.command == 'init':
         with InstanceLock(data):
             username = input('管理員帳號： ').strip()
             password = getpass.getpass('密碼（至少 12 字元，含英文字母與數字）： ')
@@ -107,6 +196,14 @@ def main():
         restore(data, args.file, input('管理員帳號： '), getpass.getpass('管理員密碼： '))
         print('還原已完成並驗證，請重新啟動伺服器。')
     elif args.command == 'backup':
+        if url:
+            from server.app import create_app
+            app = create_app(data)
+            try:
+                print(app.state.backup())
+            finally:
+                app.state.engine.dispose()
+            return
         backup_dir = Path(config.get('backup_dir', str(data / 'backups')))
         backup_dir.mkdir(parents=True, exist_ok=True)
         print(snapshot(data / 'points.db', backup_dir / f'manual-{time.time_ns()}.db'))

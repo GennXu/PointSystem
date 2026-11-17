@@ -1,3 +1,4 @@
+from datetime import datetime
 import sqlite3
 import uuid
 
@@ -37,9 +38,11 @@ def test_legacy_upgrade_preserves_all_data_and_qr(tmp_path):
     uid, token = legacy_database(tmp_path)
     before = tables(tmp_path / 'points.db')
     app = create_app(tmp_path)
-    assert tables(tmp_path / 'points.db') == before
+    after = tables(tmp_path / 'points.db')
+    assert {**after, 'transactions': [r[:-1] for r in after['transactions']]} == before
+    assert all(datetime.fromisoformat(r[-1]) == datetime.fromisoformat(r[-2]) for r in after['transactions'])
     with sqlite3.connect(tmp_path / 'points.db') as db:
-        assert db.execute('SELECT version_num FROM alembic_version').fetchone()[0] == '0002'
+        assert db.execute('SELECT version_num FROM alembic_version').fetchone()[0] == '0003'
         assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
         assert db.execute('PRAGMA foreign_key_check').fetchall() == []
         assert db.execute("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'tx_no_%'").fetchone()[0] == 2

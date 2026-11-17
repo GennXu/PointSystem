@@ -12,6 +12,9 @@ data/
 backups/
 logs/
 *.db
+*.bak
+*.cer
+**/https/
 *.db-*
 *.sqlite
 *.sqlite3

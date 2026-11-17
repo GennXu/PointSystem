@@ -2,7 +2,7 @@
 [Setup]
 AppId={{DCF730C7-7AA1-4759-9312-937152549726}
 AppName={#AppName}
-AppVersion=1.1.0
+AppVersion=1.2.0
 DefaultDirName={autopf}\QRPointSystem
 DefaultGroupName=QR 點數系統
 OutputDir=..\dist

@@ -1,6 +1,10 @@
 # QR Point System
 
-目前版本：1.1.0。新增修改密碼、會員本人查詢、負點數、相機／圖片掃碼與中文交易名稱，升級與 HTTPS 設定見 `docs/RELEASE_1.1.0.md`。
+手機即時掃碼部署請閱讀 [手機 HTTPS 與相機設定](docs/HTTPS_MOBILE.md)，已提供內部 CA 建立／續期指令與 iPhone、Android 信任設定。
+
+目前開發版本：1.2.0。新增會員資料編輯、指定日期補登、0.5 點、Excel 匯入、會員編號交易查詢，正式部署改用 SQL Server Express。
+
+**新安裝與舊資料移轉請先閱讀 [SQL Express 建置與移轉](docs/SQL_EXPRESS.md) 及 [1.2.0 更新說明](docs/RELEASE_1.2.0.md)。以下 SQLite 安裝／還原段落保留供舊版參考，1.2.0 正式部署以 SQL Express 文件為準。**
 
 依使用者提供的 2026-10-27 V1 規格建立。繁體中文 LAN 點數系統：一台 Windows 主機、SQLite 唯一主庫、其餘工作站透過瀏覽器使用。
 

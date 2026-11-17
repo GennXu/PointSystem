@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
@@ -45,7 +46,7 @@ def migrate(path):
 
 
 def snapshot(path, destination):
-    with sqlite3.connect(path) as source, sqlite3.connect(destination) as target:
+    with closing(sqlite3.connect(path)) as source, closing(sqlite3.connect(destination)) as target:
         source.backup(target)
         if target.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
             raise RuntimeError('Backup integrity check failed')

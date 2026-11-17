@@ -9,6 +9,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -19,17 +20,22 @@ from cryptography.fernet import Fernet
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from starlette.concurrency import run_in_threadpool
 
-from server.database import MAX_POINTS, engine_for, migrate, snapshot
+from server.database import engine_for, migrate, snapshot
+from server.points import MAX_POINTS, Points
+from server.member_import import MAX_UPLOAD, read_members
+from server.sqlserver import configured_url, initialize_schema, paged, write_transaction
+from server import sqlserver
 
 ph = PasswordHasher()
 
 
 def now():
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat(timespec='microseconds')
 
 
 def digest(value):
@@ -54,6 +60,13 @@ class Member(Model):
     member_code: str = Field(min_length=1, max_length=80)
     display_name: str = Field(min_length=1, max_length=100)
 
+    @field_validator('member_code', 'display_name')
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError('不可空白')
+        return value.strip()
+
 
 class Status(Model):
     status: str = Field(pattern='^(active|disabled)$')
@@ -70,10 +83,22 @@ class Scan(Model):
 class Transaction(Model):
     idempotency_key: str = Field(min_length=16, max_length=128)
     user_id: str
-    amount: StrictInt = Field(ge=-MAX_POINTS, le=MAX_POINTS)
+    amount: Points
     reason: str = Field(min_length=1, max_length=500)
     station_id: str = Field(min_length=1, max_length=80)
     token: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{43}$')
+    occurred_at: datetime | None = None
+
+    @field_validator('occurred_at')
+    @classmethod
+    def past_date(cls, value):
+        if value is not None:
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError('交易日期必須包含時區')
+            value = value.astimezone(timezone.utc)
+            if value > datetime.now(timezone.utc):
+                raise ValueError('不可指定未來交易日期')
+        return value
 
 
 class PasswordChange(Model):
@@ -86,8 +111,8 @@ class PasswordReset(Model):
 
 
 class Settings(Model):
-    grant_presets: list[StrictInt] = Field(min_length=1, max_length=12)
-    staff_limit: StrictInt = Field(ge=1, le=MAX_POINTS)
+    grant_presets: list[Points] = Field(min_length=1, max_length=12)
+    staff_limit: Points = Field(ge=0.5, le=MAX_POINTS)
     backup_hour: StrictInt = Field(ge=0, le=23)
     backup_keep: StrictInt = Field(ge=1, le=365)
 
@@ -101,16 +126,25 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
     backups = Path(backup_dir) if backup_dir else data / 'backups'
     backups.mkdir(parents=True, exist_ok=True)
     db = data / 'points.db'
-    if db.exists():
+    database_url = configured_url(data)
+    if not database_url and db.exists():
         snapshot(db, backups / f'pre-start-{time.time_ns()}.db')
         for old in sorted(backups.glob('pre-start-*.db'), reverse=True)[5:]:
             old.unlink()
-    migrate(db)
+    if database_url:
+        engine = sqlserver.create_engine(database_url, pool_pre_ping=True, hide_parameters=True)
+        initialize_schema(engine)
+    else:
+        migrate(db)
+        engine = engine_for(db)
     key_file = data / 'secret.key'
     if not key_file.exists():
+        with engine.connect() as c:
+            if c.execute(text('SELECT count(*) FROM qr_credentials')).scalar():
+                engine.dispose()
+                raise RuntimeError('資料庫已有 QR，請還原原本的 secret.key，不能產生替代密鑰')
         key_file.write_bytes(Fernet.generate_key())
     cipher = Fernet(key_file.read_bytes())
-    engine = engine_for(db)
     log = logging.getLogger('qrpoint.' + digest(str(data)))
     log.setLevel(logging.INFO)
     if not log.handlers:
@@ -121,29 +155,26 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
 
     @contextmanager
     def write():
-        with engine.connect() as c:
-            c.exec_driver_sql('BEGIN IMMEDIATE')
-            try:
-                yield c
-                c.commit()
-            except BaseException:
-                c.rollback()
-                raise
+        with write_transaction(engine) as c:
+            yield c
 
     def row(c, sql, params=None):
         result = c.execute(text(sql), params or {}).mappings().first()
-        return dict(result) if result else None
+        return {k: (int(v) if v == int(v) else float(v)) if isinstance(v, Decimal) else v for k, v in result.items()} if result else None
 
     def settings(c):
-        record = row(c, "SELECT value_json FROM settings WHERE key='system'")
+        record = row(c, "SELECT value_json FROM settings WHERE [key]='system'")
         return json.loads(record['value_json']) if record else DEFAULTS.copy()
 
     def backup():
-        destination = backups / f'backup-{time.time_ns()}.db'
-        snapshot(db, destination)
+        destination = backups / f'backup-{time.time_ns()}{".bak" if database_url else ".db"}'
+        if database_url:
+            sqlserver.backup(engine, destination)
+        else:
+            snapshot(db, destination)
         with engine.connect() as c:
             keep = settings(c)['backup_keep']
-        for old in sorted(backups.glob('backup-*.db'), reverse=True)[keep:]:
+        for old in sorted(backups.glob('backup-*' + destination.suffix), reverse=True)[keep:]:
             old.unlink()
         return destination.name
 
@@ -172,7 +203,7 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
         thread.join(timeout=2)
         engine.dispose()
 
-    app = FastAPI(title='QR Point System', version='1.1.0', lifespan=lifespan)
+    app = FastAPI(title='QR Point System', version='1.2.0', lifespan=lifespan)
     app.state.engine = engine
     app.state.backup = backup
     app.state.db = db
@@ -255,7 +286,8 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
                 start, count = attempt['window_start'], attempt['count']
             if count >= 10:
                 raise HTTPException(429, '登入嘗試過多，請五分鐘後再試')
-            c.execute(text('INSERT OR REPLACE INTO login_attempts VALUES(:s,:n,:t)'), {'s': source, 'n': count + 1, 't': start})
+            c.execute(text('DELETE FROM login_attempts WHERE source=:s'), {'s': source})
+            c.execute(text('INSERT INTO login_attempts VALUES(:s,:n,:t)'), {'s': source, 'n': count + 1, 't': start})
         with engine.connect() as c:
             operator = row(c, 'SELECT * FROM operators WHERE username=:u', {'u': body.username})
         try:
@@ -341,7 +373,8 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
             start = attempt['window_start'] if count else timestamp
             if count >= 30:
                 raise HTTPException(429, '查詢次數過多，請五分鐘後再試')
-            c.execute(text('INSERT OR REPLACE INTO login_attempts VALUES(:s,:n,:t)'), {'s': source, 'n': count + 1, 't': start})
+            c.execute(text('DELETE FROM login_attempts WHERE source=:s'), {'s': source})
+            c.execute(text('INSERT INTO login_attempts VALUES(:s,:n,:t)'), {'s': source, 'n': count + 1, 't': start})
         with write() as c:
             user = credential(c, body.token)
             qr = row(c, 'SELECT id FROM qr_credentials WHERE token_hash=:hash', {'hash': digest(body.token)})
@@ -360,10 +393,10 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
     @app.get('/api/portal/transactions')
     def portal_transactions(limit: int = 50, offset: int = 0, uid=Depends(portal_member)):
         with engine.connect() as c:
-            records = c.execute(text("""SELECT t.id,t.type,t.delta,t.balance_before,t.balance_after,t.reason,t.created_at,
+            records = c.execute(text(paged(c, """SELECT t.id,t.type,t.delta,t.balance_before,t.balance_after,t.reason,t.created_at,t.occurred_at,
                 u.display_name AS member_name,o.username AS operator_name FROM transactions t
                 JOIN users u ON u.id=t.user_id JOIN operators o ON o.id=t.operator_id
-                WHERE t.user_id=:uid ORDER BY t.created_at DESC LIMIT :n OFFSET :offset"""), {'uid': uid, 'n': min(max(limit, 1), 100), 'offset': max(offset, 0)}).mappings()
+                WHERE t.user_id=:uid ORDER BY t.occurred_at DESC,t.created_at DESC,t.id DESC LIMIT :n OFFSET :offset""")), {'uid': uid, 'n': min(max(limit, 1), 100), 'offset': max(offset, 0)}).mappings()
             return [dict(r) for r in records]
 
     @app.post('/api/portal/logout')
@@ -389,7 +422,39 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
     @app.get('/api/users')
     def list_members(q: str = '', offset: int = 0, limit: int = 100, operator=Depends(current)):
         with engine.connect() as c:
-            return [dict(r) for r in c.execute(text('SELECT * FROM users WHERE member_code LIKE :q OR display_name LIKE :q ORDER BY created_at DESC LIMIT :n OFFSET :offset'), {'q': '%' + q[:100] + '%', 'n': min(max(limit, 1), 200), 'offset': max(offset, 0)}).mappings()]
+            return [dict(r) for r in c.execute(text(paged(c, 'SELECT * FROM users WHERE member_code LIKE :q OR display_name LIKE :q ORDER BY created_at DESC,id DESC LIMIT :n OFFSET :offset')), {'q': '%' + q[:100] + '%', 'n': min(max(limit, 1), 200), 'offset': max(offset, 0)}).mappings()]
+
+    @app.post('/api/users/import')
+    async def import_members(request: Request, operator=Depends(admin)):
+        content = bytearray()
+        async for chunk in request.stream():
+            content.extend(chunk)
+            if len(content) > MAX_UPLOAD:
+                raise HTTPException(413, 'Excel 檔案不得超過 5 MB')
+        return await run_in_threadpool(import_member_batch, bytes(content), operator)
+
+    def import_member_batch(content, operator):
+        members = read_members(content)
+        with write() as c:
+            for entry in members:
+                if row(c, 'SELECT id FROM users WHERE member_code=:code', {'code': entry['member_code']}):
+                    raise HTTPException(409, f"第 {entry['line']} 列：會員編號 {entry['member_code']} 已存在，整批未匯入")
+                uid = str(uuid.uuid4())
+                c.execute(text("INSERT INTO users VALUES(:id,:code,:name,'active',0,:now,:now,0)"),
+                          {'id': uid, 'code': entry['member_code'], 'name': entry['display_name'], 'now': now()})
+                issue(c, uid)
+        log.info('member_import operator=%s count=%s', operator['id'], len(members))
+        return {'imported': len(members)}
+
+    @app.put('/api/users/{uid}')
+    def edit_member(uid: str, body: Member, operator=Depends(admin)):
+        with write() as c:
+            original = get_user(c, uid)
+            c.execute(text('UPDATE users SET member_code=:code,display_name=:name,updated_at=:now,version=version+1 WHERE id=:id'),
+                      {'code': body.member_code, 'name': body.display_name, 'now': now(), 'id': uid})
+            result = get_user(c, uid)
+        log.info('member_edit operator=%s user=%s old_code=%s new_code=%s', operator['id'], uid, original['member_code'], body.member_code)
+        return result
 
     @app.get('/api/users/{uid}')
     def member(uid: str, operator=Depends(current)):
@@ -432,9 +497,15 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
     def transact(kind, body, operator):
         if kind == 'ADJUST' and operator['role'] != 'Admin':
             raise HTTPException(403, '限管理員')
-        if kind != 'ADJUST' and body.amount < 1:
-            raise HTTPException(422, '點數必須為正整數')
-        request_hash = digest(json.dumps({'kind': kind, 'operator': operator['id'], **body.model_dump()}, sort_keys=True))
+        if kind != 'ADJUST' and body.amount < 0.5:
+            raise HTTPException(422, '點數必須至少 0.5 點')
+        if body.occurred_at is not None and operator['role'] != 'Admin':
+            raise HTTPException(403, '限管理員補登交易')
+        request_data = body.model_dump(mode='json', exclude_none=True)
+        # Keep legacy integer request hashes valid after upgrade.
+        request_data['amount'] = int(body.amount) if body.amount.is_integer() else body.amount
+        request_data.setdefault('token', None)
+        request_hash = digest(json.dumps({'kind': kind, 'operator': operator['id'], **request_data}, sort_keys=True))
         with write() as c:
             old = row(c, 'SELECT * FROM transactions WHERE idempotency_key=:key', {'key': body.idempotency_key})
             if old:
@@ -453,11 +524,15 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
                 if scanned['id'] != body.user_id:
                     raise HTTPException(409, 'QR 與會員不符')
             before = user['balance']
-            delta = body.amount if kind == 'GRANT' else -body.amount if kind == 'REDEEM' else body.amount - before
-            after = before + delta
-            if abs(after) > MAX_POINTS or abs(delta) > MAX_POINTS:
-                raise HTTPException(409, '點數超出安全整數範圍')
-            tx = {'id': str(uuid.uuid4()), 'idempotency_key': body.idempotency_key, 'request_hash': request_hash, 'user_id': body.user_id, 'operator_id': operator['id'], 'type': kind, 'delta': delta, 'balance_before': before, 'balance_after': after, 'reason': body.reason, 'station_id': body.station_id, 'created_at': now()}
+            before_units, amount_units = int(before * 2), int(body.amount * 2)
+            delta_units = amount_units if kind == 'GRANT' else -amount_units if kind == 'REDEEM' else amount_units - before_units
+            after_units = before_units + delta_units
+            if abs(after_units) > MAX_POINTS * 2 or abs(delta_units) > MAX_POINTS * 2:
+                raise HTTPException(409, '點數超出安全範圍')
+            delta = delta_units // 2 if delta_units % 2 == 0 else delta_units / 2
+            after = after_units // 2 if after_units % 2 == 0 else after_units / 2
+            recorded = now()
+            tx = {'id': str(uuid.uuid4()), 'idempotency_key': body.idempotency_key, 'request_hash': request_hash, 'user_id': body.user_id, 'operator_id': operator['id'], 'type': kind, 'delta': delta, 'balance_before': before, 'balance_after': after, 'reason': body.reason, 'station_id': body.station_id, 'created_at': recorded, 'occurred_at': body.occurred_at.isoformat(timespec='microseconds') if body.occurred_at else recorded}
             updated = c.execute(text('UPDATE users SET balance=:after,version=version+1,updated_at=:now WHERE id=:id AND balance=:before'), {'after': after, 'before': before, 'now': now(), 'id': body.user_id})
             if updated.rowcount != 1:
                 raise HTTPException(409, '餘額已變更')
@@ -479,21 +554,30 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
     def adjust(body: Transaction, operator=Depends(admin)):
         return transact('ADJUST', body, operator)
 
-    def query_transactions(c, operator, user_id, kind, operator_id, start, end, limit, offset):
-        sql = '''SELECT t.id,t.idempotency_key,t.user_id,t.operator_id,t.type,t.delta,t.balance_before,t.balance_after,t.reason,t.station_id,t.created_at, u.member_code,u.display_name AS member_name,o.username AS operator_name FROM transactions t JOIN users u ON u.id=t.user_id JOIN operators o ON o.id=t.operator_id WHERE 1=1'''
+    def query_transactions(c, operator, user_id, kind, operator_id, start, end, limit, offset, member_code=''):
+        sql = '''SELECT t.id,t.idempotency_key,t.user_id,t.operator_id,t.type,t.delta,t.balance_before,t.balance_after,t.reason,t.station_id,t.created_at,t.occurred_at, u.member_code,u.display_name AS member_name,o.username AS operator_name FROM transactions t JOIN users u ON u.id=t.user_id JOIN operators o ON o.id=t.operator_id WHERE 1=1'''
         params = {}
-        for column, value, symbol in [('user_id', user_id, '='), ('type', kind, '='), ('operator_id', operator['id'] if operator['role'] == 'Staff' else operator_id, '='), ('created_at', start, '>='), ('created_at', end, '<=')]:
+        for column, value, symbol in [('user_id', user_id, '='), ('type', kind, '='), ('operator_id', operator['id'] if operator['role'] == 'Staff' else operator_id, '='), ('occurred_at', start, '>='), ('occurred_at', end, '<=')]:
             if value:
+                if column == 'occurred_at':
+                    try:
+                        date = datetime.fromisoformat(value.replace('Z', '+00:00'))
+                        value = date.replace(tzinfo=timezone.utc).isoformat(timespec='microseconds') if date.tzinfo is None else date.astimezone(timezone.utc).isoformat(timespec='microseconds')
+                    except ValueError:
+                        raise HTTPException(422, '日期格式錯誤') from None
                 key = 'p' + str(len(params))
                 sql += f' AND t.{column}{symbol}:{key}'
                 params[key] = value
+        if member_code:
+            sql += ' AND u.member_code=:member_code'
+            params['member_code'] = member_code
         params.update(n=limit, offset=offset)
-        return [dict(r) for r in c.execute(text(sql + ' ORDER BY t.created_at DESC LIMIT :n OFFSET :offset'), params).mappings()]
+        return [dict(r) for r in c.execute(text(paged(c, sql + ' ORDER BY t.occurred_at DESC,t.created_at DESC,t.id DESC LIMIT :n OFFSET :offset')), params).mappings()]
 
     @app.get('/api/transactions')
-    def transactions(user_id: str = '', kind: str = '', operator_id: str = '', start: str = '', end: str = '', limit: int = 100, offset: int = 0, operator=Depends(current)):
+    def transactions(user_id: str = '', kind: str = '', operator_id: str = '', start: str = '', end: str = '', limit: int = 100, offset: int = 0, member_code: str = '', operator=Depends(current)):
         with engine.connect() as c:
-            return query_transactions(c, operator, user_id, kind, operator_id, start, end, min(max(limit, 1), 200), max(offset, 0))
+            return query_transactions(c, operator, user_id, kind, operator_id, start, end, min(max(limit, 1), 200), max(offset, 0), member_code)
 
     @app.get('/api/transactions/by-key/{key}')
     def by_key(key: str, operator=Depends(current)):
@@ -504,9 +588,9 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
         return {k: v for k, v in tx.items() if k != 'request_hash'}
 
     @app.get('/api/transactions/export')
-    def export(user_id: str = '', kind: str = '', operator_id: str = '', start: str = '', end: str = '', operator=Depends(current)):
+    def export(user_id: str = '', kind: str = '', operator_id: str = '', start: str = '', end: str = '', member_code: str = '', operator=Depends(current)):
         def safe(value):
-            if isinstance(value, int):
+            if isinstance(value, (int, float, Decimal)):
                 return value
             value = str(value)
             return "'" + value if value.lstrip().startswith(('=', '+', '-', '@', '\t', '\r', '\n')) else value
@@ -516,13 +600,13 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
             offset = 0
             with engine.connect() as c:
                 while True:
-                    rows = query_transactions(c, operator, user_id, kind, operator_id, start, end, 1000, offset)
+                    rows = query_transactions(c, operator, user_id, kind, operator_id, start, end, 1000, offset, member_code)
                     if not rows:
                         break
                     stream = io.StringIO(newline='')
                     writer = csv.writer(stream)
                     if offset == 0:
-                        writer.writerow(['交易編號','請求識別碼','會員識別碼','操作員識別碼','交易種類','點數增減','交易前餘額','交易後餘額','原因','工作站','建立時間（世界標準時間）','會員編號','會員名稱','操作員名稱'])
+                        writer.writerow(['交易編號','請求識別碼','會員識別碼','操作員識別碼','交易種類','點數增減','交易前餘額','交易後餘額','原因','工作站','登錄時間（UTC）','交易日期（UTC）','會員編號','會員名稱','操作員名稱'])
                     writer.writerows([safe({'GRANT': '發點', 'REDEEM': '扣點', 'ADJUST': '餘額調整'}.get(v, v) if key == 'type' else v) for key, v in record.items()] for record in rows)
                     yield stream.getvalue()
                     offset += len(rows)
@@ -536,10 +620,11 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
 
     @app.put('/api/settings')
     def put_settings(body: Settings, operator=Depends(admin)):
-        if any(n < 1 or n > MAX_POINTS for n in body.grant_presets) or len(set(body.grant_presets)) != len(body.grant_presets):
-            raise HTTPException(422, '固定額度必須是不重複的正整數')
+        if any(n < 0.5 or n > MAX_POINTS for n in body.grant_presets) or len(set(body.grant_presets)) != len(body.grant_presets):
+            raise HTTPException(422, '固定額度須不重複，且為 0.5 的正倍數')
         with write() as c:
-            c.execute(text("INSERT OR REPLACE INTO settings VALUES('system',:v,:now)"), {'v': body.model_dump_json(), 'now': now()})
+            c.execute(text("DELETE FROM settings WHERE [key]='system'"))
+            c.execute(text("INSERT INTO settings VALUES('system',:v,:now)"), {'v': body.model_dump_json(), 'now': now()})
         log.info('settings_update operator=%s', operator['id'])
         return body
 
@@ -577,7 +662,7 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
 
     @app.get('/api/backups')
     def list_backups(operator=Depends(admin)):
-        return [p.name for p in sorted(backups.glob('*.db'), reverse=True)]
+        return [p.name for p in sorted(backups.glob('*.bak' if database_url else '*.db'), reverse=True)]
 
     if static_dir and Path(static_dir).exists():
         app.mount('/assets', StaticFiles(directory=Path(static_dir) / 'assets'), name='assets')

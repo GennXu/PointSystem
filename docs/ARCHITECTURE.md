@@ -1,5 +1,13 @@
 # 架構
 
+## 1.2.0 正式架構
+
+PC-01 的 FastAPI / SQLAlchemy 透過 pyodbc 與 ODBC Driver 18 連接同機 SQL Server Express；其他裝置只連瀏覽器 API。SQL schema 位於 server/sqlserver.py，點數為 DECIMAL(17,1)，限制為半點倍數。每次寫入以資料庫交易及 sp_getapplock 保護整個冪等檢查、餘額更新與流水帳新增，跨 API 實例共用交易鎖。
+
+交易保存 occurred_at（交易日期）與 created_at（登錄時間）。補登不重寫既有帳本，只影響目前餘額。SQL trigger 阻擋帳本更新／刪除。SQL 備份為 .bak，使用 COPY_ONLY 與 CHECKSUM；備份驗證及還原限 SQL 維護帳號。SQLite 保留為舊資料來源、開發與回歸測試，正式 CLI 要求 SQL 連線設定。
+
+建置、權限、移轉與驗收見 [SQL_EXPRESS.md](SQL_EXPRESS.md)。以下為 1.1.0 的歷史架構。
+
 PC-01：單一 Uvicorn 程序提供 FastAPI 與 Vue 靜態資源，SQLAlchemy 連線 SQLite 本機檔案。PC-02/03：同源 HTTP 瀏覽器，HID Keyboard 掃描器。無 CDN、外部字型或網際網路執行需求。
 
 `users` 保有可為負數的安全整數餘額與版本；`qr_credentials` 保留撤銷歷史、SHA-256 token_hash 及 Fernet token_cipher；`operators` 儲存 Argon2id 雜湊；`transactions` 保留不可變帳本；`settings` 儲存系統 JSON；`sessions` 儲存雜湊 Session ID 與 CSRF；`login_attempts` 為持久化速率限制。

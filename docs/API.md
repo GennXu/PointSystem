@@ -45,3 +45,12 @@ grant/adjust 不需要 token。adjust 的 amount 代表目標餘額。全部交�
 - POST /api/portal/logout：需 X-Portal-Action: logout，撤銷 member_session。
 
 點數 amount 在 adjust 可負，grant/redeem 仍須正整數。餘額與單筆 delta 皆須在安全整數範圍內。交易查詢新增 member_code/member_name/operator_name；CSV 標題與交易種類使用繁體中文。
+
+## 1.2.0 新增／變更
+
+- `PUT /api/users/{uid}`（Admin）：`member_code`、`display_name`；保持內部 ID、QR 與帳本關聯。
+- `POST /api/users/import`（Admin）：直接上傳 .xlsx 二進位內容（不是 multipart）；首兩欄 `會員編號,會員名稱` 或 `member_code,display_name`。5 MB／2000 列，成功回傳 `{"imported": n}`；重複 409、格式錯誤 422、超量 413，整批回滾。
+- 發點／扣點／調整的 `amount` 允許 0.5 的倍數；可選 `occurred_at` 為含時區的過去 ISO 8601 時間，限 Admin。`created_at` 維持實際登錄時間。
+- 交易查詢／CSV 可加 `member_code=049` 完整會員編號條件；原 `user_id` 參數保留。日期 start/end 以交易日期篩選，含時區值統一為 UTC；省略時區的 API 篩選值視為 UTC，介面輸入以台北時間處理。
+- 設定的 `grant_presets`、`staff_limit` 同樣支援半點。新點數請求絕對值上限 4503599627370495。
+- 權限、CSRF、Staff 僅查自己的交易與冪等規則維持。正式 DB 改用 SQL Express，參考 SQL_EXPRESS.md。

@@ -1,7 +1,8 @@
 from alembic import context
 from sqlalchemy import create_engine
+from sqlalchemy.pool import NullPool
 
-with create_engine(context.config.get_main_option('sqlalchemy.url')).connect() as connection:
+with create_engine(context.config.get_main_option('sqlalchemy.url'), poolclass=NullPool).connect() as connection:
     # SQLite table rebuilds need FK checks suspended before BEGIN; validate before commit.
     connection.exec_driver_sql('PRAGMA foreign_keys=OFF')
     connection.commit()
