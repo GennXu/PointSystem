@@ -2,14 +2,15 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import CameraScanner from './CameraScanner.vue'
 import { parseToken, taipei, transactionLabel } from './logic'
+import { requestJson } from './request'
 const emit = defineEmits<{ close: [] }>()
 type Member = { member_code: string; display_name: string; balance: number }
 type Tx = { id: string; type: string; delta: number; balance_before: number; balance_after: number; reason: string; occurred_at: string; created_at: string; member_name: string; operator_name: string }
 const token = ref(''), me = ref<Member | null>(null), rows = ref<Tx[]>([]), busy = ref(false), message = ref(''), page = ref(0)
 async function request(path: string, method = 'GET', body?: unknown) {
-  const response = await fetch('/api/portal' + path, { method, headers: { 'Content-Type': 'application/json', 'X-Portal-Action': 'logout' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000) })
-  if (!response.ok) { if (response.status === 401) { me.value = null; rows.value = [] }; const error = await response.json(); throw new Error(typeof error.detail === 'string' ? error.detail : '查詢失敗，請稍後再試') }
-  return response.json()
+  const { response, data } = await requestJson('/api/portal' + path, { method, headers: { 'Content-Type': 'application/json', 'X-Portal-Action': 'logout' }, body: body === undefined ? undefined : JSON.stringify(body) })
+  if (!response.ok) { if (response.status === 401) { me.value = null; rows.value = [] }; throw new Error(typeof data.detail === 'string' ? data.detail : '查詢失敗，請稍後再試') }
+  return data
 }
 async function refresh() { me.value = await request('/me'); rows.value = await request('/transactions?offset=' + page.value * 50) }
 async function run(action: () => Promise<void>) { if (busy.value) return; busy.value = true; message.value = ''; try { await action() } catch (e) { message.value = e instanceof Error ? e.message : '無法連線，請稍後再試' } finally { busy.value = false } }

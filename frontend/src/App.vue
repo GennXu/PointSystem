@@ -3,11 +3,13 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { parseToken, points, signedPoints, taipei, requestId, roleLabel, transactionLabel } from './logic'
 import CameraScanner from './CameraScanner.vue'
 import MemberPortal from './MemberPortal.vue'
+import { requestJson } from './request'
 type User = { id: string; member_code: string; display_name: string; balance: number; status: string }
 type Operator = { id: string; username: string; role: string; csrf: string }
 type Tx = { member_name: string; member_code: string; operator_name: string; id: string; user_id: string; operator_id: string; type: string; delta: number; balance_before: number; balance_after: number; reason: string; station_id: string; created_at: string; occurred_at: string }
 const editing = ref<User | null>(null), editCode = ref(''), editName = ref(''), occurredAt = ref('')
 const importFile = ref<File | null>(null)
+const healthError = ref('')
 const portal = ref(false), oldPassword = ref(''), changedPassword = ref(''), confirmPassword = ref(''), resetTarget = ref(''), resetPassword = ref('')
 const me = ref<Operator | null>(null), online = ref(false), busy = ref(false), message = ref(''), error = ref(false)
 const tab = ref('掃碼核銷'), username = ref(''), password = ref(''), users = ref<User[]>([]), query = ref('')
@@ -30,14 +32,13 @@ async function resetStaffPassword() { await run(async () => { await api('/operat
 function printQr() { window.print() }
 function notify(text: string, failed = false) { message.value = text; error.value = failed }
 async function api(path: string, method = 'GET', body?: unknown) {
-  const response = await fetch('/api' + path, { method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(me.value ? { 'X-CSRF-Token': me.value.csrf } : {}) }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15000) })
-  online.value = true
+  const { response, data } = await requestJson('/api' + path, { method, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(me.value ? { 'X-CSRF-Token': me.value.csrf } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) })
   if (!response.ok) {
-    const result = await response.json().catch(() => ({ detail: '伺服器錯誤' }))
+    const result = data
     if (response.status === 401 && path !== '/auth/login') me.value = null
     throw new Error(typeof result.detail === 'string' ? result.detail : '輸入資料不符合規則')
   }
-  return response.json()
+  return data
 }
 async function run(action: () => Promise<void>) {
   if (busy.value) return
@@ -66,8 +67,7 @@ function selectImport(event: Event) { importFile.value = (event.target as HTMLIn
 async function importMembers() { await run(async () => {
   if (!importFile.value) throw new Error('請先選擇 Excel 檔案')
   if (importFile.value.size > 5 * 1024 * 1024) throw new Error('檔案不得超過 5 MB')
-  const response = await fetch('/api/users/import', { method: 'POST', headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'X-CSRF-Token': me.value!.csrf }, body: importFile.value, signal: AbortSignal.timeout(60000) })
-  const result = await response.json()
+  const { response, data: result } = await requestJson('/api/users/import', { method: 'POST', headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'X-CSRF-Token': me.value!.csrf }, body: importFile.value }, 60000)
   if (!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : '匯入失敗')
   importFile.value = null; await search(); notify(`已匯入 ${result.imported} 位會員`)
 }) }
@@ -125,7 +125,13 @@ watch(tab, async () => {
   })
 })
 watch(station, () => { localStorage.setItem('station', station.value); loadPending() })
-async function health() { try { await api('/health'); online.value = true } catch { online.value = false } }
+async function health() {
+  try {
+    const result = await api('/health')
+    if (result?.status !== 'ok') throw new Error('健康檢查回應不正確，請確認 API 網址')
+    online.value = true; healthError.value = ''
+  } catch (error) { online.value = false; healthError.value = error instanceof Error ? error.message : '連線檢查失敗' }
+}
 onMounted(async () => { await health(); try { me.value = await api('/auth/me'); await loadConfig(); loadPending() } catch { /* login required */ } timer = setInterval(health, 10000) })
 onUnmounted(() => clearInterval(timer))
 </script>
@@ -134,7 +140,7 @@ onUnmounted(() => clearInterval(timer))
   <header><div><span class="logo">QR</span><strong>點數管理系統</strong><small>私人區域網路</small></div><div><span :class="['status', online ? 'up' : 'down']">{{ online ? '● 伺服器已連線' : '● 無法連線' }}</span><span v-if="me">{{ me.username }} · {{ roleLabel(me.role) }} <button @click="logout" :disabled="busy">登出</button></span></div></header>
   <div class="notice">{{ secureTransport ? '目前使用 HTTPS 加密連線。' : 'HTTP 傳輸未加密，僅適用隔離且可信任的區域網路；其他裝置即時相機需改用 HTTPS。' }}靜態會員圖碼可被複製，核銷前請核對會員身分。</div>
   <MemberPortal v-if="portal && !me" @close="portal = false" />
-  <main v-else-if="!me" class="login"><h1>操作員登入</h1><button @click="portal = true">一般使用者查詢</button><p>請使用管理員建立的本機帳號</p><form @submit.prevent="login"><label>帳號<input v-model="username" autocomplete="username" required></label><label>密碼<input v-model="password" type="password" autocomplete="current-password" required></label><button class="primary" :disabled="busy || !online">登入</button></form><p>首次使用請於 PC-01 執行 QRPointServer.exe init。</p></main>
+  <main v-else-if="!me" class="login"><h1>操作員登入</h1><button @click="portal = true">一般使用者查詢</button><p>請使用管理員建立的本機帳號</p><form @submit.prevent="login"><label>帳號<input v-model="username" autocomplete="username" required></label><label>密碼<input v-model="password" type="password" autocomplete="current-password" required></label><button class="primary" :disabled="busy || !online">登入</button></form><p v-if="!online && healthError" role="alert">{{ healthError }}。可在同一台設備開啟 <a href="/api/health" target="_blank" rel="noopener">API 連線檢查</a> 協助排錯。</p><p>首次使用請於 PC-01 執行 QRPointServer.exe init。</p></main>
   <div v-else class="layout"><aside><nav><button v-for="item in tabs" :key="item" :class="{ active: tab === item }" @click="tab = item">{{ item }}</button></nav><label class="station">工作站識別<input v-model="station" maxlength="80" :disabled="!!pending || busy"></label><small>工作站識別為操作紀錄標記</small></aside>
     <main><div class="title"><h1>{{ tab }}</h1><span>點數作業 · 台北時間</span></div>
       <section v-if="pending" class="pending"><h2>交易結果待確認</h2><p>冪等鍵：{{ pending.key }}</p><button @click="verifyPending" :disabled="busy || !online">查證交易</button><button @click="retryPending" :disabled="busy || !online">以原鍵重試</button><button v-if="isAdmin" @click="clearPending">已人工核對，解除狀態</button></section>
