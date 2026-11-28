@@ -48,6 +48,10 @@ grant/adjust 不需要 token。adjust 的 amount 代表目標餘額。全部交�
 
 ## 1.2.0 新增／變更
 
+- `GET /api/redeem-templates`（已登入操作員）：取得商品扣點模板，欄位 `id`、`name`、`points`。
+- `PUT /api/redeem-templates`（Admin）：`{"templates":[{"id":"小寫 UUID","name":"咖啡","points":50.5}]}`，原子儲存最多 50 項。空清單清空模板；名稱／ID 不可重複，點數須為正的半點倍數。獨立於一般系統設定，不受舊版客戶端保存 settings 影響。
+- `POST /api/transactions/redeem` 可帶 `redeem_template_id`，仍必須提供原交易必要欄位與有效 QR。伺服器核對 `amount` 與目前模板價格；模板刪除或價格不同回傳 409，不寫入交易。商品名稱保存在交易原因，同冪等鍵已成功的請求在模板刪除後仍回傳原交易。
+
 - `PUT /api/users/{uid}`（Admin）：`member_code`、`display_name`；保持內部 ID、QR 與帳本關聯。
 - `POST /api/users/import`（Admin）：直接上傳 .xlsx 二進位內容（不是 multipart）；首兩欄 `會員編號,會員名稱` 或 `member_code,display_name`。5 MB／2000 列，成功回傳 `{"imported": n}`；重複 409、格式錯誤 422、超量 413，整批回滾。
 - 發點／扣點／調整的 `amount` 允許 0.5 的倍數；可選 `occurred_at` 為含時區的過去 ISO 8601 時間，限 Admin。`created_at` 維持實際登錄時間。

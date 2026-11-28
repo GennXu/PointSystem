@@ -1,5 +1,13 @@
 # 驗收測試報告
 
+## 2026-11-28 扣點模板增量驗證
+
+- 後端 pytest：52 passed、2 skipped；新增模板權限、舊設定相容、重啟持久化、商品與價格驗證、QR、半點扣點、冪等重試，以及模板刪除後歷史紀錄保存測試。2 項 skipped 仍為需要實際 SQL Server 的整合測試。
+- 前端 Vitest：13 passed；Vue 型別檢查、Vite production build 與 Python Ruff 通過。
+- Edge headless、390 × 844 手機尺寸驗證通過：管理員新增／保存商品、選擇模板不立即扣點、確認半點扣點、交易原因保留商品名稱、價格更新後拒絕舊價格且恢復選取。使用測試 QR 文字輸入，未宣稱實體手機鏡頭驗收。
+- Windows PyInstaller onedir EXE 建置成功；實際以隔離 SQLite 測試資料庫及受信任測試 HTTPS 憑證啟動，驗證 Secure cookie、登入、會員查詢、模板保存與商品扣點通過。SQL Express 現場驗證仍需執行。
+- 本次提供完整可攜程式更新包，非 Inno Setup 安裝器；不能只換前端。備份並沿用既有 SQL Express config.json、secret.key、HTTPS 憑證與資料目錄，更新步驟隨包提供。
+
 ## 1.2.0 本次修改驗證（2026-11-17，Asia/Taipei）
 
 環境：Windows、Python 3.14.6、Node 24.22.1、pnpm 11.25.0。以下為本次實際結果；後文為舊版歷史報告。

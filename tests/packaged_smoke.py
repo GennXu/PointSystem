@@ -26,7 +26,7 @@ def main():
     root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(root))
     from server.app import initialize
-    exe = root / 'dist/QRPointServer/QRPointServer.exe'
+    exe = Path(os.environ.get('QRPOINT_SMOKE_EXE', root / 'dist/QRPointServer/QRPointServer.exe'))
     with tempfile.TemporaryDirectory(prefix='qrpoint-https-test-') as temporary:
         data = Path(temporary)
         initialize(data, 'smoke-admin', 'Smoke-Test-9284')
@@ -83,7 +83,19 @@ def main():
             member, _ = request('/portal/login', {'token': user['token']})
             assert member['balance'] == -100
             assert request('/portal/transactions')[0][0]['delta'] == -100
+            template = {'id': str(uuid.uuid4()), 'name': '封裝測試咖啡', 'points': 0.5}
+            template_request = urllib.request.Request(base + '/redeem-templates',
+                data=json.dumps({'templates': [template]}).encode(), method='PUT',
+                headers={'Content-Type': 'application/json', 'X-CSRF-Token': csrf})
+            with opener.open(template_request, timeout=10) as result:
+                assert json.loads(result.read()) == [template]
+            product_tx, _ = request('/transactions/redeem', {'idempotency_key': str(uuid.uuid4()),
+                'user_id': user['id'], 'amount': 0.5, 'reason': '商品：封裝測試咖啡', 'station_id': 'TEST',
+                'token': user['token'], 'redeem_template_id': template['id']})
+            assert product_tx['balance_after'] == -100.5
+            assert product_tx['reason'] == '商品：封裝測試咖啡'
             print('PASS: frozen EXE, trusted-certificate HTTPS, Secure cookie, negative points, transaction names and portal')
+            print('PASS: frozen EXE product templates and half-point redemption')
         finally:
             shutdown = None
             try:

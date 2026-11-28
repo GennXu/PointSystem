@@ -974,6 +974,56 @@
         }
       }
     },
+    "/api/redeem-templates": {
+      "get": {
+        "summary": "Get Redeem Templates",
+        "operationId": "get_redeem_templates_api_redeem_templates_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Save Redeem Templates",
+        "operationId": "save_redeem_templates_api_redeem_templates_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedeemTemplates"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/settings": {
       "get": {
         "summary": "Get Settings",
@@ -1283,6 +1333,55 @@
         ],
         "title": "PasswordReset"
       },
+      "RedeemTemplate": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "points": {
+            "type": "number",
+            "minimum": 0.5,
+            "title": "Points",
+            "ge": -4503599627370495,
+            "le": 4503599627370495,
+            "multiple_of": 0.5
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "points"
+        ],
+        "title": "RedeemTemplate"
+      },
+      "RedeemTemplates": {
+        "properties": {
+          "templates": {
+            "items": {
+              "$ref": "#/components/schemas/RedeemTemplate"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Templates"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "templates"
+        ],
+        "title": "RedeemTemplates"
+      },
       "Scan": {
         "properties": {
           "token": {
@@ -1413,6 +1512,19 @@
               }
             ],
             "title": "Occurred At"
+          },
+          "redeem_template_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redeem Template Id"
           }
         },
         "additionalProperties": false,

@@ -88,6 +88,7 @@ class Transaction(Model):
     station_id: str = Field(min_length=1, max_length=80)
     token: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]{43}$')
     occurred_at: datetime | None = None
+    redeem_template_id: str | None = Field(default=None, min_length=1, max_length=80)
 
     @field_validator('occurred_at')
     @classmethod
@@ -115,6 +116,30 @@ class Settings(Model):
     staff_limit: Points = Field(ge=0.5, le=MAX_POINTS)
     backup_hour: StrictInt = Field(ge=0, le=23)
     backup_keep: StrictInt = Field(ge=1, le=365)
+
+
+class RedeemTemplate(Model):
+    id: str = Field(pattern=r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$')
+    name: str = Field(min_length=1, max_length=100)
+    points: Points = Field(ge=0.5)
+
+    @field_validator('name')
+    @classmethod
+    def valid_name(cls, value):
+        if not value.strip():
+            raise ValueError('商品名稱不可空白')
+        return value.strip()
+
+
+class RedeemTemplates(Model):
+    templates: list[RedeemTemplate] = Field(max_length=50)
+
+    @field_validator('templates')
+    @classmethod
+    def unique_templates(cls, value):
+        if len({t.id for t in value}) != len(value) or len({t.name.casefold() for t in value}) != len(value):
+            raise ValueError('商品識別碼與商品名稱不可重複')
+        return value
 
 
 DEFAULTS = {'grant_presets': [50, 100, 200], 'staff_limit': 200, 'backup_hour': 2, 'backup_keep': 14}
@@ -165,6 +190,10 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
     def settings(c):
         record = row(c, "SELECT value_json FROM settings WHERE [key]='system'")
         return json.loads(record['value_json']) if record else DEFAULTS.copy()
+
+    def redeem_templates(c):
+        record = row(c, "SELECT value_json FROM settings WHERE [key]='redeem_templates'")
+        return json.loads(record['value_json']) if record else []
 
     def backup():
         destination = backups / f'backup-{time.time_ns()}{".bak" if database_url else ".db"}'
@@ -495,6 +524,8 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
             return credential(c, body.token)
 
     def transact(kind, body, operator):
+        if body.redeem_template_id is not None and kind != 'REDEEM':
+            raise HTTPException(422, '扣點模板僅能用於扣點交易')
         if kind == 'ADJUST' and operator['role'] != 'Admin':
             raise HTTPException(403, '限管理員')
         if kind != 'ADJUST' and body.amount < 0.5:
@@ -512,6 +543,17 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
                 if old['request_hash'] != request_hash:
                     raise HTTPException(409, '同一冪等鍵的請求內容不同')
                 return {k: v for k, v in old.items() if k != 'request_hash'}
+            transaction_reason = body.reason
+            if body.redeem_template_id is not None:
+                template = next((t for t in redeem_templates(c) if t['id'] == body.redeem_template_id), None)
+                if not template:
+                    raise HTTPException(409, '商品模板已刪除，請重新選擇商品')
+                if body.amount != template['points']:
+                    raise HTTPException(409, '商品點數已變更，請重新載入並選擇商品')
+                product_reason = '商品：' + template['name']
+                transaction_reason = product_reason if body.reason == product_reason else product_reason + '｜' + body.reason
+                if len(transaction_reason) > 500:
+                    raise HTTPException(422, '商品名稱與操作原因合計不可超過 500 字元')
             if kind == 'GRANT' and operator['role'] == 'Staff':
                 config = settings(c)
                 if body.amount not in config['grant_presets'] or body.amount > config['staff_limit']:
@@ -532,7 +574,7 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
             delta = delta_units // 2 if delta_units % 2 == 0 else delta_units / 2
             after = after_units // 2 if after_units % 2 == 0 else after_units / 2
             recorded = now()
-            tx = {'id': str(uuid.uuid4()), 'idempotency_key': body.idempotency_key, 'request_hash': request_hash, 'user_id': body.user_id, 'operator_id': operator['id'], 'type': kind, 'delta': delta, 'balance_before': before, 'balance_after': after, 'reason': body.reason, 'station_id': body.station_id, 'created_at': recorded, 'occurred_at': body.occurred_at.isoformat(timespec='microseconds') if body.occurred_at else recorded}
+            tx = {'id': str(uuid.uuid4()), 'idempotency_key': body.idempotency_key, 'request_hash': request_hash, 'user_id': body.user_id, 'operator_id': operator['id'], 'type': kind, 'delta': delta, 'balance_before': before, 'balance_after': after, 'reason': transaction_reason, 'station_id': body.station_id, 'created_at': recorded, 'occurred_at': body.occurred_at.isoformat(timespec='microseconds') if body.occurred_at else recorded}
             updated = c.execute(text('UPDATE users SET balance=:after,version=version+1,updated_at=:now WHERE id=:id AND balance=:before'), {'after': after, 'before': before, 'now': now(), 'id': body.user_id})
             if updated.rowcount != 1:
                 raise HTTPException(409, '餘額已變更')
@@ -611,6 +653,20 @@ def create_app(data_dir, static_dir=None, secure_cookie=False, backup_dir=None):
                     yield stream.getvalue()
                     offset += len(rows)
         return StreamingResponse(chunks(), media_type='text/csv; charset=utf-8', headers={'Content-Disposition': 'attachment; filename="transactions.csv"'})
+
+    @app.get('/api/redeem-templates')
+    def get_redeem_templates(operator=Depends(current)):
+        with engine.connect() as c:
+            return redeem_templates(c)
+
+    @app.put('/api/redeem-templates')
+    def save_redeem_templates(body: RedeemTemplates, operator=Depends(admin)):
+        with write() as c:
+            c.execute(text("DELETE FROM settings WHERE [key]='redeem_templates'"))
+            c.execute(text("INSERT INTO settings VALUES('redeem_templates',:v,:now)"),
+                      {'v': json.dumps([t.model_dump() for t in body.templates], ensure_ascii=False), 'now': now()})
+        log.info('redeem_templates_update operator=%s count=%s', operator['id'], len(body.templates))
+        return body.templates
 
     @app.get('/api/settings')
     def get_settings(operator=Depends(current)):
