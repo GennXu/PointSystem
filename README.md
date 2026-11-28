@@ -1,5 +1,7 @@
 # QR Point System
 
+雙擊更新工具：以 `python scripts/build_update.py --app-bundle dist/QRPointServer` 將已建置、測試的完整程式封裝為 `output/updater/PointSystemUpdate.exe`。使用者在伺服器雙擊、確認原程式與資料目錄後即可更新；工具先檢查 SQL／憑證與資料庫版本，正常停服後只替換 EXE 與 `_internal`，保留程式備份，啟動失敗時嘗試回復。需使用原服務 Windows 帳號及管理員權限；舊 SQLite 須先安排移轉。
+
 2026-11-28 新增「扣點模板」：管理員設定商品與消耗點數，操作員掃描會員後點選商品，再確認快速扣點；支援 0.5 點，全設備共用，歷史交易保留商品名稱。需同時更新後端與前端，操作見 [版本說明](docs/RELEASE_1.2.0.md)。
 
 手機即時掃碼部署請閱讀 [手機 HTTPS 與相機設定](docs/HTTPS_MOBILE.md)，已提供內部 CA 建立／續期指令與 iPhone、Android 信任設定。

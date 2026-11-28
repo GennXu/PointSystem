@@ -4,6 +4,31 @@
 
 ## 主機設定
 
+### 使用伺服器產生腳本
+
+已提供 `scripts/setup_https.ps1`。在系統管理員 PowerShell 從專案根目錄執行：
+
+```powershell
+.\scripts\setup_https.ps1 -ServerIP 192.168.1.10 -StopServer
+```
+
+需已有專案 `.venv` 與安裝完成的依賴。若腳本放在已更新的 EXE 資料夾，則使用 ` .\setup_https.ps1 -ServerIP 192.168.1.10 -StopServer`。下載單一腳本並放在其他位置時，明確指定程式與資料路徑：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup_https.ps1 `
+  -ServerIP 192.168.1.10 `
+  -AppDir 'C:\Program Files\QRPointSystem' `
+  -DataDir 'C:\ProgramData\QRPointSystem' `
+  -AppAccount 'PC-01\PointService' `
+  -StopServer
+```
+
+IP、路徑及 API 執行帳號請換成現場實際值。預設 AppAccount 為目前帳號；API 若使用不同帳號，務必指定它，避免重啟後讀不到憑證。舊版 EXE 若沒有 https-setup 指令，腳本會明確停止；不會自動下載或更新軟體。可用 `-Python '專案\.venv\Scripts\python.exe' -AppDir '專案根目錄'` 改用原始碼。
+
+腳本先確認版本與私有 IPv4；`-StopServer` 送出正常停止要求，等待鎖定釋放後再產生憑證。會限制 https 資料夾權限、在其中保存 config.json 備份，並沿用現有 CA。輸入兩次 CA 密碼（續期用原密碼），成功後顯示手機網址、公開 .cer 路徑與 SHA-256 指紋。完成後自行正常啟動 API；腳本不修改手機信任、不改防火牆，也不自動重啟服務。只有產生憑證還不能免除手機安裝 CA 的步驟。
+
+僅檢查執行環境而不更動系統，可加 `-ValidateOnly`；這只驗證程式支援、路徑與 IP，不代表手機信任或實際 HTTPS 已驗收。若不使用腳本，依下列步驟手動執行同一個程式指令。
+
 1. 在路由器為 PC-01 設 DHCP 保留，或由管理員設定固定 IP。以下 `192.168.1.10` 僅為範例，必須換成實際主機 IP。
 2. 依 SQL_EXPRESS.md 完成 SQL Express 與應用程式設定，停止目前 API 服務。
 3. 在可存取資料目錄的主機管理員終端執行：

@@ -23,6 +23,7 @@ if errorlevel 1 exit /b 1
 copy /y *.bat dist\QRPointServer\ >nul
 copy /y config.example.json dist\QRPointServer\ >nul
 copy /y README.md dist\QRPointServer\ >nul
+copy /y scripts\setup_https.ps1 dist\QRPointServer\ >nul
 if not exist dist\QRPointServer\docs mkdir dist\QRPointServer\docs
 copy /y docs\SQL_EXPRESS.md dist\QRPointServer\docs\ >nul
 copy /y docs\HTTPS_MOBILE.md dist\QRPointServer\docs\ >nul

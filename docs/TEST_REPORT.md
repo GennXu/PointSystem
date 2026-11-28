@@ -1,5 +1,11 @@
 # 驗收測試報告
 
+## 2026-11-28 雙擊更新工具驗證
+
+- pytest：60 passed、2 SQL Server 整合 skipped；新增成功換版只更動自有程式檔、設定與資料保留、啟動失敗回復、預先檢查失敗不停止原服務、損壞更新檔拒絕、路徑越界拒絕、Windows 啟動參數／帳號保留與唯讀 update-check 測試。
+- 以真實 Windows EXE、獨立測試資料目錄及測試 CA，通過正常停服、替換完整執行環境、背景重啟、釘選既有 HTTPS 憑證的 API 檢查；原登入 Session、會員餘額、流水帳、config.json、secret.key 與憑證均保留。另注入新版啟動檢查失敗，確認原執行環境還原並自動重啟。
+- 已建置單一 GUI 更新 EXE，確認內嵌完整程式與 SHA-256 清單、Windows requireAdministrator manifest。更新引擎測試使用隔離 SQLite 開發資料；SQL Express 實際部署、不同 Windows 帳號及現場 UAC／手機操作仍待現場驗收。
+
 ## 2026-11-28 扣點模板增量驗證
 
 - 後端 pytest：52 passed、2 skipped；新增模板權限、舊設定相容、重啟持久化、商品與價格驗證、QR、半點扣點、冪等重試，以及模板刪除後歷史紀錄保存測試。2 項 skipped 仍為需要實際 SQL Server 的整合測試。

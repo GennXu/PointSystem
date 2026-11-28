@@ -107,7 +107,7 @@ def main():
         if stream is not None and hasattr(stream, 'reconfigure'):
             stream.reconfigure(encoding='utf-8', errors='backslashreplace')
     parser = argparse.ArgumentParser(description='QR Point LAN server')
-    parser.add_argument('command', nargs='?', default='serve', choices=['serve', 'init', 'backup', 'restore', 'check', 'stop', 'schema', 'migrate-sqlite', 'provision', 'verify-backup', 'https-setup'])
+    parser.add_argument('command', nargs='?', default='serve', choices=['serve', 'init', 'backup', 'restore', 'check', 'stop', 'schema', 'migrate-sqlite', 'provision', 'verify-backup', 'https-setup', 'update-check'])
     default_data = str(Path(os.environ.get('PROGRAMDATA', '.')) / 'QRPointSystem')
     if os.name == 'nt':
         import winreg
@@ -137,7 +137,36 @@ def main():
     if bool(config.get('tls_certfile')) != bool(config.get('tls_keyfile')):
         raise RuntimeError('HTTPS 憑證與私密金鑰必須同時設定')
     scheme = 'https' if config.get('tls_certfile') else 'http'
-    if args.command == 'https-setup':
+    if args.command == 'update-check':
+        # Read-only preflight for the updater. Never run create_app/migrations here.
+        from cryptography.fernet import Fernet
+        from sqlalchemy import text
+        Fernet((data / 'secret.key').read_bytes())
+        if config.get('tls_certfile'):
+            import ssl
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.load_cert_chain(config['tls_certfile'], config['tls_keyfile'])
+        if not url:
+            if config.get('allow_sqlite_development') and (data / 'points.db').is_file():
+                from contextlib import closing
+                with closing(sqlite3.connect(f'{(data / "points.db").resolve().as_uri()}?mode=ro', uri=True)) as c:
+                    if c.execute('SELECT version_num FROM alembic_version').fetchone()[0] != '0003':
+                        raise RuntimeError('資料庫版本不相容，未進行更新或移轉')
+                    c.execute('SELECT COUNT(*) FROM operators').fetchone()
+                print(json.dumps({'status': 'ok', 'schema': '0003'}))
+                return
+            raise RuntimeError('自動更新僅支援已完成 SQL Express 建置的部署；舊 SQLite 請先安排移轉')
+        engine = create_engine(url, hide_parameters=True)
+        try:
+            with engine.connect() as c:
+                version = c.execute(text('SELECT version_num FROM alembic_version')).scalar()
+                if version != '0003':
+                    raise RuntimeError('資料庫版本不相容，未進行更新或移轉')
+                c.execute(text('SELECT COUNT(*) FROM operators')).scalar()
+        finally:
+            engine.dispose()
+        print(json.dumps({'status': 'ok', 'schema': '0003'}))
+    elif args.command == 'https-setup':
         from server.https_setup import configure_https
         with InstanceLock(data):
             password = getpass.getpass('CA 保護密碼（至少 12 字元，續期時輸入原密碼）： ')

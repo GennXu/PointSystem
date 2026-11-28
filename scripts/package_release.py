@@ -18,6 +18,7 @@ with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:
     release_files = [(setup, 'Setup.exe'), (manual, '操作手冊.pdf'), (root / 'docs/QUICK_START.txt', '開始使用.txt'), (root / 'docs/GITHUB_UPDATES.md', 'GITHUB_UPDATES.md'), (root / 'docs/RELEASE_1.2.0.md', '版本更新說明.md')]
     release_files.append((root / 'docs/SQL_EXPRESS.md', 'SQL_EXPRESS.md'))
     release_files.append((root / 'docs/HTTPS_MOBILE.md', 'HTTPS_MOBILE.md'))
+    release_files.append((root / 'scripts/setup_https.ps1', 'setup_https.ps1'))
     checksums = ''
     for file, name in release_files:
         z.write(file, name)

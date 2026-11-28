@@ -36,6 +36,11 @@ jobs:
         run: build_windows.bat
       - name: Verify packaged HTTPS server
         run: python tests/packaged_smoke.py
+      - name: Build double-click updater
+        run: |
+          python scripts/build_update.py --app-bundle dist/QRPointServer
+          Copy-Item output/updater/PointSystemUpdate.exe dist/PointSystemUpdate.exe
+          Copy-Item output/updater/PointSystemUpdate.sha256 dist/PointSystemUpdate.sha256
       - name: Package release
         run: python scripts/package_release.py
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -43,6 +48,8 @@ jobs:
           name: QRPointSystem-windows
           path: |
             dist/Setup.exe
+            dist/PointSystemUpdate.exe
+            dist/PointSystemUpdate.sha256
             dist/QRPointSystem-*.zip
             dist/SHA256SUMS.txt
           if-no-files-found: error
